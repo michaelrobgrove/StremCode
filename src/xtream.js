@@ -17,8 +17,18 @@ export class XtreamClient {
     const t = setTimeout(() => ac.abort(), timeoutMs);
     try {
       const r = await fetch(url, { signal: ac.signal, headers: { 'User-Agent': 'StremCodes/2.0' } });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
+      if (!r.ok) {
+        const body = await r.text().catch(() => '');
+        console.log('XC HTTP error', r.status, url.split('?')[0], body.slice(0, 100));
+        throw new Error('HTTP ' + r.status);
+      }
+      const text = await r.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        console.log('XC non-JSON response:', text.slice(0, 150));
+        throw new Error('Non-JSON response from server');
+      }
     } finally { clearTimeout(t); }
   }
 

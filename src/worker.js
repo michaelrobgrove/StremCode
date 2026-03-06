@@ -62,9 +62,12 @@ async function handleValidate(url, env) {
         activeConnections: info.user_info.active_cons,
       });
     }
-    return json({ valid: false, error: 'Invalid credentials' });
-  } catch {
-    return json({ valid: false, error: 'Could not reach server' });
+    // Log what we actually got back to help debug
+    console.log('Validate: unexpected response:', JSON.stringify(info).slice(0, 200));
+    return json({ valid: false, error: 'Invalid credentials', debug: JSON.stringify(info).slice(0, 200) });
+  } catch (e) {
+    console.log('Validate error:', e && e.message, 'server:', server);
+    return json({ valid: false, error: 'Could not reach server: ' + (e && e.message) });
   }
 }
 
