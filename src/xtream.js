@@ -1,102 +1,100 @@
 /**
- * StremCodes - Xtream Codes API Client
- *
- * Handles all communication with Xtream Codes IPTV servers.
- * Supports: player_api, VOD, Series, Live streams
+ * StremCodes - Xtream Codes API Client v1.4
  */
 
 export class XtreamClient {
   constructor(server, username, password) {
-    // Normalize server URL
     this.server = server.replace(/\/$/, '');
     if (!this.server.startsWith('http')) {
       this.server = 'http://' + this.server;
     }
     this.username = username;
     this.password = password;
-    this.baseParams = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+    this.baseParams = 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
   }
 
   get apiUrl() {
-    return `${this.server}/player_api.php?${this.baseParams}`;
+    return this.server + '/player_api.php?' + this.baseParams;
   }
 
-  async fetch(url, opts = {}) {
+  async fetch(url, opts) {
+    opts = opts || {};
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(url, {
-        ...opts,
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'StremCodes/1.0',
-          ...opts.headers,
-        },
+        signal: opts.signal || controller.signal,
+        headers: { 'User-Agent': 'StremCodes/1.4' },
       });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} from XC server`);
-      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.json();
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  /** Get account info + server info */
   async getPlayerInfo() {
-    return this.fetch(`${this.apiUrl}&action=get_server_info`);
+    return this.fetch(this.apiUrl + '&action=get_server_info');
   }
 
-  // ─── VOD ─────────────────────────────────────────────────────────────────
-
-  /** Get all VOD categories */
   async getVodCategories() {
-    return this.fetch(`${this.apiUrl}&action=get_vod_categories`);
+    return this.fetch(this.apiUrl + '&action=get_vod_categories');
   }
 
-  /** Get VOD streams, optionally filtered by category */
-  async getVodStreams(categoryId = null) {
-    const cat = categoryId && categoryId !== 'all' ? `&category_id=${categoryId}` : '';
-    return this.fetch(`${this.apiUrl}&action=get_vod_streams${cat}`);
+  // Standard fetch (15s timeout built in)
+  async getVodStreams(categoryId) {
+    const cat = categoryId && categoryId !== 'all' ? '&category_id=' + categoryId : '';
+    return this.fetch(this.apiUrl + '&action=get_vod_streams' + cat);
   }
 
-  /** Get VOD stream info (includes tmdb_id etc) */
+  // Raw fetch with caller-supplied AbortSignal (for custom timeout control)
+  async getVodStreamsRaw(signal) {
+    const res = await fetch(this.apiUrl + '&action=get_vod_streams', {
+      signal: signal,
+      headers: { 'User-Agent': 'StremCodes/1.4' },
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+
   async getVodInfo(vodId) {
-    return this.fetch(`${this.apiUrl}&action=get_vod_info&vod_id=${vodId}`);
+    return this.fetch(this.apiUrl + '&action=get_vod_info&vod_id=' + vodId);
   }
 
-  // ─── Series ──────────────────────────────────────────────────────────────
-
-  /** Get all Series categories */
   async getSeriesCategories() {
-    return this.fetch(`${this.apiUrl}&action=get_series_categories`);
+    return this.fetch(this.apiUrl + '&action=get_series_categories');
   }
 
-  /** Get series list, optionally by category */
-  async getSeriesList(categoryId = null) {
-    const cat = categoryId && categoryId !== 'all' ? `&category_id=${categoryId}` : '';
-    return this.fetch(`${this.apiUrl}&action=get_series${cat}`);
+  async getSeriesList(categoryId) {
+    const cat = categoryId && categoryId !== 'all' ? '&category_id=' + categoryId : '';
+    return this.fetch(this.apiUrl + '&action=get_series' + cat);
   }
 
-  /** Get series info including episodes */
+  // Raw fetch with caller-supplied AbortSignal
+  async getSeriesListRaw(signal) {
+    const res = await fetch(this.apiUrl + '&action=get_series', {
+      signal: signal,
+      headers: { 'User-Agent': 'StremCodes/1.4' },
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+
   async getSeriesInfo(seriesId) {
-    return this.fetch(`${this.apiUrl}&action=get_series_info&series_id=${seriesId}`);
+    return this.fetch(this.apiUrl + '&action=get_series_info&series_id=' + seriesId);
   }
 
-  // ─── Stream URLs ─────────────────────────────────────────────────────────
-
-  /** Build direct VOD stream URL */
-  getVodStreamUrl(streamId, ext = 'mkv') {
-    return `${this.server}/movie/${this.username}/${this.password}/${streamId}.${ext}`;
+  getVodStreamUrl(streamId, ext) {
+    ext = ext || 'mkv';
+    return this.server + '/movie/' + this.username + '/' + this.password + '/' + streamId + '.' + ext;
   }
 
-  /** Build series episode stream URL */
-  getSeriesStreamUrl(streamId, ext = 'mkv') {
-    return `${this.server}/series/${this.username}/${this.password}/${streamId}.${ext}`;
+  getSeriesStreamUrl(streamId, ext) {
+    ext = ext || 'mkv';
+    return this.server + '/series/' + this.username + '/' + this.password + '/' + streamId + '.' + ext;
   }
 
-  /** Build live stream URL */
   getLiveStreamUrl(streamId) {
-    return `${this.server}/live/${this.username}/${this.password}/${streamId}.m3u8`;
+    return this.server + '/live/' + this.username + '/' + this.password + '/' + streamId + '.m3u8';
   }
 }

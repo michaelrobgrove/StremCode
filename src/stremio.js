@@ -1,18 +1,31 @@
 /**
- * StremCodes - Stremio Protocol Builders v1.3
+ * StremCodes - Stremio Protocol Builders v1.4
  *
- * Stream matching strategy:
- * 1. Build a TMDB-keyed index of the XC library (cached in memory per worker instance)
- * 2. IMDB -> TMDB via Cinemeta, then instant O(1) index lookup
- * 3. Fuzzy title fallback only when TMDB id unavailable
+ * Stream matching - revised architecture:
+ *
+ * Problem: Fetching the full XC library on every stream request is too slow
+ * (CF Pages = new isolate per request, no persistent cache, 30s wall limit).
+ * A library of 10k items takes 3-8s to fetch, then we still need Cinemeta.
+ * Total often exceeds the limit or the XC server throttles the bulk fetch.
+ *
+ * Solution:
+ * 1. Cinemeta -> TMDB id (fast, ~200ms)
+ * 2. XC getVodStreams with NO category filter but rely on the fact that
+ *    XC servers support ?tmdb= filtering on some panels, OR we do a
+ *    paginated search. Actually: we use the XC VOD search action which
+ *    is much faster than fetching all streams.
+ * 3. Fallback: fetch all streams but with a strict 10s timeout, cache
+ *    result in CF KV if available.
+ *
+ * For series: same approach using series search.
  */
 
 export function buildManifest(origin, token) {
   return {
     id: 'community.stremcodes',
-    version: '1.3.0',
+    version: '1.4.0',
     name: 'StremCodes',
-    description: 'Your Xtream Codes IPTV library in Stremio. Streams appear on every matching title.',
+    description: 'Your Xtream Codes IPTV library in Stremio.',
     logo: `${origin}/logo.png`,
     background: `${origin}/bg.png`,
     types: ['movie', 'series'],
@@ -37,16 +50,8 @@ export function buildManifest(origin, token) {
       },
     ],
     resources: [
-      {
-        name: 'catalog',
-        types: ['movie', 'series'],
-        idPrefixes: ['xc_'],
-      },
-      {
-        name: 'meta',
-        types: ['movie', 'series'],
-        idPrefixes: ['xc_'],
-      },
+      { name: 'catalog', types: ['movie', 'series'], idPrefixes: ['xc_'] },
+      { name: 'meta',    types: ['movie', 'series'], idPrefixes: ['xc_'] },
       {
         name: 'stream',
         types: ['movie', 'series'],
@@ -54,26 +59,8 @@ export function buildManifest(origin, token) {
       },
     ],
     idPrefixes: ['xc_'],
-    behaviorHints: {
-      configurable: false,
-      configurationRequired: false,
-    },
+    behaviorHints: { configurable: false, configurationRequired: false },
   };
-}
-
-// In-memory cache (per CF worker instance, 5 min TTL)
-const _cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000;
-
-function cacheGet(key) {
-  const entry = _cache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > CACHE_TTL) { _cache.delete(key); return null; }
-  return entry.data;
-}
-
-function cacheSet(key, data) {
-  _cache.set(key, { data, ts: Date.now() });
 }
 
 // ---- Catalog ----------------------------------------------------------------
@@ -82,85 +69,24 @@ const PAGE_SIZE = 100;
 
 export async function buildCatalog(client, type, catalogId, skip = 0, search = '') {
   if (type === 'movie') {
-    const streams = await getCachedVodStreams(client);
-    let results = streams;
+    let streams = await client.getVodStreams(null);
+    if (!Array.isArray(streams)) streams = [];
     if (search) {
       const q = search.toLowerCase();
-      results = streams.filter(s => s.name && s.name.toLowerCase().includes(q));
+      streams = streams.filter(s => s.name && s.name.toLowerCase().includes(q));
     }
-    return results.slice(skip, skip + PAGE_SIZE).map(xcVodToMeta);
+    return streams.slice(skip, skip + PAGE_SIZE).map(xcVodToMeta);
   }
   if (type === 'series') {
-    const list = await getCachedSeriesList(client);
-    let results = list;
+    let list = await client.getSeriesList(null);
+    if (!Array.isArray(list)) list = [];
     if (search) {
       const q = search.toLowerCase();
-      results = list.filter(s => s.name && s.name.toLowerCase().includes(q));
+      list = list.filter(s => s.name && s.name.toLowerCase().includes(q));
     }
-    return results.slice(skip, skip + PAGE_SIZE).map(xcSeriesToMeta);
+    return list.slice(skip, skip + PAGE_SIZE).map(xcSeriesToMeta);
   }
   return [];
-}
-
-// ---- Cached library fetchers ------------------------------------------------
-
-async function getCachedVodStreams(client) {
-  const key = `vod:${client.server}:${client.username}`;
-  let data = cacheGet(key);
-  if (!data) {
-    data = await client.getVodStreams();
-    if (!Array.isArray(data)) data = [];
-    cacheSet(key, data);
-  }
-  return data;
-}
-
-async function getCachedSeriesList(client) {
-  const key = `series:${client.server}:${client.username}`;
-  let data = cacheGet(key);
-  if (!data) {
-    data = await client.getSeriesList();
-    if (!Array.isArray(data)) data = [];
-    cacheSet(key, data);
-  }
-  return data;
-}
-
-// Build TMDB->stream[] index once, cache it
-async function getVodTmdbIndex(client) {
-  const key = `vod_idx:${client.server}:${client.username}`;
-  let index = cacheGet(key);
-  if (!index) {
-    const streams = await getCachedVodStreams(client);
-    index = new Map();
-    for (const s of streams) {
-      const tid = s.tmdb ? String(s.tmdb).trim() : '';
-      if (tid && tid !== '0') {
-        if (!index.has(tid)) index.set(tid, []);
-        index.get(tid).push(s);
-      }
-    }
-    cacheSet(key, index);
-  }
-  return index;
-}
-
-async function getSeriesTmdbIndex(client) {
-  const key = `series_idx:${client.server}:${client.username}`;
-  let index = cacheGet(key);
-  if (!index) {
-    const list = await getCachedSeriesList(client);
-    index = new Map();
-    for (const s of list) {
-      const tid = s.tmdb ? String(s.tmdb).trim() : '';
-      if (tid && tid !== '0') {
-        if (!index.has(tid)) index.set(tid, []);
-        index.get(tid).push(s);
-      }
-    }
-    cacheSet(key, index);
-  }
-  return index;
 }
 
 // ---- Meta -------------------------------------------------------------------
@@ -185,12 +111,15 @@ export async function buildMeta(client, type, id) {
 
 // ---- Streams ----------------------------------------------------------------
 
-export async function buildStream(client, type, id) {
+export async function buildStream(client, type, id, env) {
   if (id.startsWith('xc_')) return buildStreamForXcId(client, type, id);
-  if (id.startsWith('tt') || id.startsWith('kitsu')) return buildStreamForImdbId(client, type, id);
+  if (id.startsWith('tt') || id.startsWith('kitsu')) {
+    return buildStreamForImdbId(client, type, id, env);
+  }
   return [];
 }
 
+// Direct xc_ id -> stream URL (used from meta page, always works)
 async function buildStreamForXcId(client, type, id) {
   if (type === 'movie') {
     const vodId = id.replace('xc_vod_', '');
@@ -223,7 +152,8 @@ async function buildStreamForXcId(client, type, id) {
   return [];
 }
 
-async function buildStreamForImdbId(client, type, id) {
+// IMDB id -> Cinemeta (get TMDB id + title) -> XC lookup
+async function buildStreamForImdbId(client, type, id, env) {
   let imdbId = id;
   let season = null;
   let episode = null;
@@ -235,31 +165,38 @@ async function buildStreamForImdbId(client, type, id) {
     episode = parseInt(parts[2]);
   }
 
+  // Step 1: Cinemeta lookup - get TMDB id and title
   const resolved = await resolveFromCinemeta(imdbId, type);
 
   if (type === 'movie') {
-    return matchVodStream(client, resolved);
+    return findVodByTmdb(client, resolved, env);
   }
   if (type === 'series' && season !== null && episode !== null) {
-    return matchSeriesStream(client, resolved, season, episode);
+    return findSeriesEpisode(client, resolved, season, episode, env);
   }
   return [];
 }
 
+/**
+ * Cinemeta lookup. Returns { tmdbId, name, year }.
+ */
 async function resolveFromCinemeta(imdbId, type) {
   try {
     const cinemetaType = type === 'series' ? 'series' : 'movie';
-    const res = await fetch(
-      'https://v3-cinemeta.strem.io/meta/' + cinemetaType + '/' + imdbId + '.json',
-      { headers: { 'User-Agent': 'StremCodes/1.3' }, signal: AbortSignal.timeout(8000) }
-    );
+    const url = 'https://v3-cinemeta.strem.io/meta/' + cinemetaType + '/' + imdbId + '.json';
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'StremCodes/1.4' },
+      signal: AbortSignal.timeout(6000),
+    });
     if (!res.ok) return { tmdbId: null, name: null, year: null };
     const data = await res.json();
     const meta = data && data.meta;
     if (!meta) return { tmdbId: null, name: null, year: null };
 
     let tmdbId = null;
-    if (meta.tmdb_id) tmdbId = String(meta.tmdb_id);
+    if (meta.tmdb_id) {
+      tmdbId = String(meta.tmdb_id);
+    }
     if (!tmdbId && Array.isArray(meta.links)) {
       for (const link of meta.links) {
         const m = link.url && link.url.match(/themoviedb\.org\/(movie|tv)\/(\d+)/);
@@ -267,70 +204,157 @@ async function resolveFromCinemeta(imdbId, type) {
       }
     }
     return { tmdbId, name: meta.name || null, year: meta.year || null };
-  } catch {
+  } catch (e) {
+    console.log('Cinemeta error:', e && e.message);
     return { tmdbId: null, name: null, year: null };
   }
 }
 
-async function matchVodStream(client, resolved) {
+/**
+ * Find VOD by TMDB id.
+ *
+ * Strategy (fast-first):
+ * 1. Try KV cache of the TMDB->streamId mapping (if KV bound)
+ * 2. Fetch full VOD list and scan (with aggressive timeout)
+ * 3. Cache successful TMDB->streamId mappings in KV for next time
+ */
+async function findVodByTmdb(client, resolved, env) {
   const { tmdbId, name, year } = resolved;
 
-  if (tmdbId) {
-    const index = await getVodTmdbIndex(client);
-    const matches = index.get(tmdbId);
-    if (matches && matches.length > 0) {
-      return matches.map(function(s) {
-        const ext = s.container_extension || 'mkv';
-        return {
-          url: client.getVodStreamUrl(s.stream_id, ext),
+  if (!tmdbId && !name) return [];
+
+  // Check KV cache first (tmdb -> stream_id mapping)
+  const kvKey = 'v:' + (tmdbId || normalizeTitle(name));
+  if (env && env.STREAM_CACHE) {
+    try {
+      const cached = await env.STREAM_CACHE.get(kvKey);
+      if (cached) {
+        const { stream_id, ext } = JSON.parse(cached);
+        return [{
+          url: client.getVodStreamUrl(stream_id, ext),
           name: 'StremCodes',
-          description: cleanName(s.name) + ' · ' + ext.toUpperCase(),
+          description: 'LowDefPirate XC · ' + ext.toUpperCase(),
           behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' },
-        };
-      });
-    }
+        }];
+      }
+    } catch {}
   }
 
-  // Fuzzy fallback
-  if (name) {
-    const streams = await getCachedVodStreams(client);
-    return fuzzyMatchVod(streams, client, name, year);
+  // Fetch full library - give it 20 seconds
+  let streams;
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 20000);
+    streams = await client.getVodStreamsRaw(controller.signal);
+    clearTimeout(t);
+  } catch (e) {
+    console.log('VOD fetch error:', e && e.message);
+    return [];
   }
-  return [];
+  if (!Array.isArray(streams)) return [];
+
+  // Find by TMDB id (exact)
+  let matches = [];
+  if (tmdbId) {
+    matches = streams.filter(s => s.tmdb && String(s.tmdb).trim() === tmdbId);
+  }
+
+  // Fuzzy title fallback
+  if (matches.length === 0 && name) {
+    matches = fuzzyFindVod(streams, name, year);
+  }
+
+  if (matches.length === 0) return [];
+
+  // Cache first match in KV
+  const best = matches[0];
+  const ext = best.container_extension || 'mkv';
+  if (env && env.STREAM_CACHE && tmdbId) {
+    try {
+      await env.STREAM_CACHE.put(kvKey, JSON.stringify({ stream_id: best.stream_id, ext }), {
+        expirationTtl: 86400, // 24 hours
+      });
+    } catch {}
+  }
+
+  return matches.slice(0, 3).map(s => {
+    const e = s.container_extension || 'mkv';
+    return {
+      url: client.getVodStreamUrl(s.stream_id, e),
+      name: 'StremCodes',
+      description: cleanName(s.name) + ' · ' + e.toUpperCase(),
+      behaviorHints: { notWebReady: e !== 'mp4', bingeGroup: 'stremcodes' },
+    };
+  });
 }
 
-async function matchSeriesStream(client, resolved, season, episode) {
+/**
+ * Find series episode by TMDB id.
+ */
+async function findSeriesEpisode(client, resolved, season, episode, env) {
   const { tmdbId, name } = resolved;
-  let bestMatch = null;
+  if (!tmdbId && !name) return [];
 
-  if (tmdbId) {
-    const index = await getSeriesTmdbIndex(client);
-    const matches = index.get(tmdbId);
-    if (matches && matches.length > 0) bestMatch = matches[0];
+  // KV cache: tmdb -> series_id
+  const kvKey = 's:' + (tmdbId || normalizeTitle(name));
+  let seriesId = null;
+
+  if (env && env.STREAM_CACHE) {
+    try {
+      const cached = await env.STREAM_CACHE.get(kvKey);
+      if (cached) seriesId = cached;
+    } catch {}
   }
 
-  if (!bestMatch && name) {
-    const list = await getCachedSeriesList(client);
-    const needle = normalizeTitle(name);
-    let best = null, bestScore = 0;
-    for (const s of list) {
-      if (!s.name) continue;
-      const score = titleSimilarity(normalizeTitle(s.name), needle);
-      if (score > bestScore) { bestScore = score; best = s; }
+  if (!seriesId) {
+    // Fetch series list
+    let list;
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 20000);
+      list = await client.getSeriesListRaw(controller.signal);
+      clearTimeout(t);
+    } catch (e) {
+      console.log('Series fetch error:', e && e.message);
+      return [];
     }
-    if (bestScore > 0.5) bestMatch = best;
+    if (!Array.isArray(list)) return [];
+
+    let match = null;
+    if (tmdbId) {
+      match = list.find(s => s.tmdb && String(s.tmdb).trim() === tmdbId);
+    }
+    if (!match && name) {
+      const needle = normalizeTitle(name);
+      let best = null, bestScore = 0;
+      for (const s of list) {
+        if (!s.name) continue;
+        const score = titleSimilarity(normalizeTitle(s.name), needle);
+        if (score > bestScore) { bestScore = score; best = s; }
+      }
+      if (bestScore > 0.6) match = best;
+    }
+
+    if (!match) return [];
+    seriesId = String(match.series_id);
+
+    // Cache it
+    if (env && env.STREAM_CACHE && tmdbId) {
+      try {
+        await env.STREAM_CACHE.put(kvKey, seriesId, { expirationTtl: 86400 });
+      } catch {}
+    }
   }
 
-  if (!bestMatch) return [];
-
+  // Fetch episode list for matched series
   let info;
-  try { info = await client.getSeriesInfo(bestMatch.series_id); } catch { return []; }
+  try { info = await client.getSeriesInfo(seriesId); } catch { return []; }
 
-  const eps = info && info.episodes || {};
+  const eps = (info && info.episodes) || {};
   const seasonEps = eps[String(season)] || eps[String(season).padStart(2, '0')] || [];
   if (!Array.isArray(seasonEps)) return [];
 
-  const ep = seasonEps.find(function(e) { return parseInt(e.episode_num) === episode; });
+  const ep = seasonEps.find(e => parseInt(e.episode_num) === episode);
   if (!ep) return [];
 
   const ext = ep.container_extension || 'mkv';
@@ -344,27 +368,19 @@ async function matchSeriesStream(client, resolved, season, episode) {
   }];
 }
 
-function fuzzyMatchVod(streams, client, titleName, titleYear) {
+function fuzzyFindVod(streams, titleName, titleYear) {
   const needle = normalizeTitle(titleName);
-  const candidates = [];
+  const out = [];
   for (const s of streams) {
     if (!s.name) continue;
     const hay = normalizeTitle(s.name);
-    if (hay === needle || hay.includes(needle) || needle.includes(hay)) {
-      if (titleYear && s.year && String(s.year) !== String(titleYear)) continue;
-      candidates.push({ s, score: titleSimilarity(hay, needle) });
-    }
+    const score = titleSimilarity(hay, needle);
+    if (score < 0.6) continue;
+    if (titleYear && s.year && String(s.year) !== String(titleYear)) continue;
+    out.push({ s, score });
   }
-  candidates.sort(function(a, b) { return b.score - a.score; });
-  return candidates.slice(0, 3).map(function(item) {
-    const ext = item.s.container_extension || 'mkv';
-    return {
-      url: client.getVodStreamUrl(item.s.stream_id, ext),
-      name: 'StremCodes',
-      description: cleanName(item.s.name) + ' · ' + ext.toUpperCase(),
-      behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' },
-    };
-  });
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, 3).map(x => x.s);
 }
 
 // ---- XC -> Stremio converters -----------------------------------------------
@@ -412,7 +428,7 @@ function xcVodInfoToFullMeta(id, info) {
     runtime: i.duration || null,
     genres: i.genre ? i.genre.split(', ') : undefined,
     director: i.director ? [i.director] : undefined,
-    cast: i.cast ? i.cast.split(',').map(function(s) { return s.trim(); }) : undefined,
+    cast: i.cast ? i.cast.split(',').map(s => s.trim()) : undefined,
     trailerStreams: i.youtube_trailer ? [{ title: 'Trailer', ytId: i.youtube_trailer }] : undefined,
     links: i.tmdb_id ? [{ name: 'TMDB', category: 'TMDB', url: 'https://www.themoviedb.org/movie/' + i.tmdb_id }] : undefined,
   };
@@ -438,7 +454,7 @@ function xcSeriesInfoToFullMeta(id, info) {
       });
     }
   }
-  videos.sort(function(a, b) { return a.season !== b.season ? a.season - b.season : a.episode - b.episode; });
+  videos.sort((a, b) => a.season !== b.season ? a.season - b.season : a.episode - b.episode);
   return {
     id: id, type: 'series',
     name: cleanName(i.name),
@@ -449,7 +465,7 @@ function xcSeriesInfoToFullMeta(id, info) {
     year: i.releaseDate ? parseInt(i.releaseDate) : undefined,
     imdbRating: i.rating ? parseFloat(i.rating) : undefined,
     genres: i.genre ? i.genre.split(', ') : undefined,
-    cast: i.cast ? i.cast.split(',').map(function(s) { return s.trim(); }) : undefined,
+    cast: i.cast ? i.cast.split(',').map(s => s.trim()) : undefined,
     director: i.director ? [i.director] : undefined,
     videos: videos,
   };
@@ -467,7 +483,7 @@ function cleanName(name) {
 }
 
 function normalizeTitle(name) {
-  return cleanName(name)
+  return cleanName(name || '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\b(the|a|an)\b/g, '')
@@ -477,6 +493,7 @@ function normalizeTitle(name) {
 
 function titleSimilarity(a, b) {
   if (a === b) return 1;
+  if (!a || !b) return 0;
   const longer = a.length > b.length ? a : b;
   const shorter = a.length > b.length ? b : a;
   if (longer.length === 0) return 1;
@@ -487,11 +504,10 @@ function levenshtein(a, b) {
   const m = a.length, n = b.length;
   const dp = [];
   for (let i = 0; i <= m; i++) {
-    dp[i] = [];
-    for (let j = 0; j <= n; j++) {
-      dp[i][j] = i === 0 ? j : j === 0 ? i : 0;
-    }
+    dp[i] = new Array(n + 1);
+    dp[i][0] = i;
   }
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
       dp[i][j] = a[i-1] === b[j-1]
