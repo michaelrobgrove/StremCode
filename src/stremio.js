@@ -2,6 +2,9 @@
  * StremCodes - Stremio Protocol Builders v2.0
  */
 
+import { resolveImdb } from './cinemeta.js';
+import { getOrBuildIndex } from './index-builder.js';
+
 const PAGE_SIZE = 100;
 
 export function buildManifest(origin, token) {

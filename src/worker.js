@@ -1,24 +1,17 @@
 /**
  * StremCodes Worker v2.0 — LowDefPirate
  *
- * Architecture:
+ * Security model:
  * - Credentials: AES-256-GCM encrypted in addon URL token, never stored
- * - TMDB index: stored in KV keyed by SHA-256(server+user+pass)
- *   → anonymous hash only, zero PII, zero credentials stored
- * - Index TTL: 6 hours → auto-rebuilds to catch daily library changes
- * - Cinemeta IMDB->TMDB: cached in KV 30 days (permanent mapping)
- * - Stream request flow:
- *     1. Decrypt token (credentials, local only)
- *     2. Cinemeta IMDB->TMDB (~200ms, often KV-cached ~5ms)
- *     3. KV index lookup (5ms) → stream URL
- *     4. If index stale/missing: rebuild in background, return what we have
+ * - KV stores only: sha256(server+user+pass) -> TMDB index
+ *   No credentials, no usernames, no server URLs — just an anonymous hash
+ * - Cinemeta IMDB->TMDB mappings cached 30 days (permanent mapping)
+ * - TMDB index cached 6 hours (catches daily library changes)
  */
 
 import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
-import { getOrBuildIndex } from './index-builder.js';
-import { resolveTmdb } from './cinemeta.js';
-import { buildManifest, buildCatalog, buildMeta, buildXcStream, makeVodStream, makeSeriesStream } from './stremio.js';
+import { buildManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -36,31 +29,26 @@ export default {
     const parts = url.pathname.split('/').filter(Boolean);
 
     try {
-      // Static assets
-      if (parts.length === 0 || parts[0] === '') return serveUI(url.origin);
-      if (parts[0] === 'health') return json({ status: 'ok', version: '2.0.0' });
+      if (parts.length === 0) return serveUI();
+      if (parts[0] === 'health')   return json({ status: 'ok', version: '2.0.0' });
       if (parts[0] === 'validate') return handleValidate(url, env);
-      if (parts[0] === 'install')  return handleInstall(url, env);
-
-      // Addon routes: /:token/...
-      if (parts.length >= 2) return handleAddon(parts[0], parts.slice(1), url, env, ctx);
-
+      if (parts[0] === 'install')  return handleInstall(url, env, ctx);
+      if (parts.length >= 2)       return handleAddon(parts[0], parts.slice(1), url, env, ctx);
       return json({ error: 'Not found' }, 404);
     } catch (err) {
-      console.error('Worker error:', err && err.message, err && err.stack);
+      console.error('Worker error:', err && err.message);
       return json({ error: 'Internal server error' }, 500);
     }
   }
 };
 
-// ---- Validate ---------------------------------------------------------------
+// ---- /validate --------------------------------------------------------------
 
 async function handleValidate(url, env) {
   const server   = url.searchParams.get('server');
   const username = url.searchParams.get('username');
   const password = url.searchParams.get('password');
   if (!server || !username || !password) return json({ valid: false, error: 'Missing parameters' }, 400);
-
   try {
     const client = new XtreamClient(server, username, password);
     const info = await client.getPlayerInfo();
@@ -75,14 +63,14 @@ async function handleValidate(url, env) {
       });
     }
     return json({ valid: false, error: 'Invalid credentials' });
-  } catch (e) {
+  } catch {
     return json({ valid: false, error: 'Could not reach server' });
   }
 }
 
-// ---- Install ----------------------------------------------------------------
+// ---- /install ---------------------------------------------------------------
 
-async function handleInstall(url, env) {
+async function handleInstall(url, env, ctx) {
   const server   = url.searchParams.get('server');
   const username = url.searchParams.get('username');
   const password = url.searchParams.get('password');
@@ -90,20 +78,21 @@ async function handleInstall(url, env) {
 
   const secret = env.ENCRYPTION_SECRET || 'stremcodes-dev-secret-change-me';
   const token = await encryptCredentials({ server, username, password }, secret);
-  const addonUrl  = url.origin + '/' + token + '/manifest.json';
+  const addonUrl   = url.origin + '/' + token + '/manifest.json';
   const stremioUrl = 'stremio://' + url.host + '/' + token + '/manifest.json';
 
-  // Kick off index build immediately in background so first stream request is fast
-  try {
+  // Kick off index build in background so first stream request is faster
+  if (ctx && ctx.waitUntil && env.INDEX_CACHE) {
+    const { getOrBuildIndex } = await import('./index-builder.js');
     const client = new XtreamClient(server, username, password);
     const hash = await credHash(server, username, password);
-    ctx_waitUntil_noop(getOrBuildIndex(client, hash, env.INDEX_CACHE));
-  } catch {}
+    ctx.waitUntil(getOrBuildIndex(client, hash, env.INDEX_CACHE));
+  }
 
   return json({ token, addonUrl, stremioUrl });
 }
 
-// ---- Addon routes -----------------------------------------------------------
+// ---- /:token/... ------------------------------------------------------------
 
 async function handleAddon(token, path, url, env, ctx) {
   const secret = env.ENCRYPTION_SECRET || 'stremcodes-dev-secret-change-me';
@@ -115,12 +104,10 @@ async function handleAddon(token, path, url, env, ctx) {
   const client = new XtreamClient(server, username, password);
   const route = path[0];
 
-  // manifest.json
   if (route === 'manifest.json') {
     return json(buildManifest(url.origin, token));
   }
 
-  // catalog/:type/:id.json
   if (route === 'catalog') {
     const type   = path[1];
     const skip   = parseInt(url.searchParams.get('skip') || '0');
@@ -134,7 +121,6 @@ async function handleAddon(token, path, url, env, ctx) {
     }
   }
 
-  // meta/:type/:id.json
   if (route === 'meta') {
     const type = path[1];
     const id   = (path[2] || '').replace('.json', '');
@@ -148,12 +134,12 @@ async function handleAddon(token, path, url, env, ctx) {
     }
   }
 
-  // stream/:type/:id.json
   if (route === 'stream') {
     const type = path[1];
     const id   = (path[2] || '').replace('.json', '');
     try {
-      const streams = await handleStream(client, type, id, creds, env, ctx);
+      const hash = await credHash(server, username, password);
+      const streams = await buildStream(client, type, id, hash, env.INDEX_CACHE);
       return json({ streams }, { 'Cache-Control': 'public, max-age=120' });
     } catch (e) {
       console.error('stream error:', e && e.message);
@@ -164,79 +150,9 @@ async function handleAddon(token, path, url, env, ctx) {
   return json({ error: 'Not found' }, 404);
 }
 
-// ---- Stream handler — the core logic ----------------------------------------
-
-async function handleStream(client, type, id, creds, env, ctx) {
-  // Direct xc_ id (from browsing our catalog) — always works, no index needed
-  if (id.startsWith('xc_')) {
-    return buildXcStream(client, type, id);
-  }
-
-  // IMDB/kitsu id — need TMDB index
-  let imdbId = id, season = null, episode = null;
-  if (type === 'series' && id.includes(':')) {
-    const p = id.split(':');
-    imdbId = p[0]; season = parseInt(p[1]); episode = parseInt(p[2]);
-  }
-
-  // Step 1: IMDB -> TMDB (KV-cached 30 days after first hit)
-  const { tmdbId, name } = await resolveTmdb(imdbId, type, env.INDEX_CACHE);
-  console.log('[stream]', imdbId, '-> tmdbId:', tmdbId, 'name:', name);
-
-  if (!tmdbId && !name) {
-    console.log('[stream] cinemeta returned nothing for', imdbId);
-    return [];
-  }
-
-  // Step 2: Get or build the TMDB index for this user's XC library
-  const hash = await credHash(creds.server, creds.username, creds.password);
-  const { vodIndex, seriesIndex, fresh } = await getOrBuildIndex(client, hash, env.INDEX_CACHE);
-
-  console.log('[stream] index size vod:', vodIndex.size, 'series:', seriesIndex.size, 'fresh:', fresh);
-
-  if (type === 'movie') {
-    const entry = tmdbId ? vodIndex.get(tmdbId) : null;
-    if (entry) {
-      console.log('[stream] found by tmdbId:', tmdbId, '->', entry.id);
-      return [makeVodStream(client, entry)];
-    }
-    console.log('[stream] tmdbId', tmdbId, 'not in vod index — no match');
-    return [];
-  }
-
-  if (type === 'series' && season !== null && episode !== null) {
-    const seriesId = tmdbId ? seriesIndex.get(tmdbId) : null;
-    if (!seriesId) {
-      console.log('[stream] series tmdbId', tmdbId, 'not in series index');
-      return [];
-    }
-    console.log('[stream] found series by tmdbId:', tmdbId, '->', seriesId);
-
-    const info = await client.getSeriesInfo(seriesId).catch(() => null);
-    if (!info || !info.episodes) return [];
-
-    const eps = info.episodes;
-    const seasonEps = eps[String(season)] || eps[String(season).padStart(2, '0')] || [];
-    if (!Array.isArray(seasonEps)) return [];
-
-    const ep = seasonEps.find(e => parseInt(e.episode_num) === episode);
-    if (!ep) {
-      console.log('[stream] episode S' + season + 'E' + episode + ' not found in series', seriesId);
-      return [];
-    }
-
-    ep._season = season;
-    ep._episode = episode;
-    return [makeSeriesStream(client, ep)];
-  }
-
-  return [];
-}
-
 // ---- UI ---------------------------------------------------------------------
 
-function serveUI(origin) {
-  // Redirect to the static index — in worker mode we inline a redirect
+function serveUI() {
   return new Response(HTML, { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
 }
 
@@ -249,12 +165,7 @@ function json(data, statusOrHeaders, extra) {
   return new Response(JSON.stringify(data), { status, headers: { ...CORS, ...addH } });
 }
 
-function ctx_waitUntil_noop(p) {
-  // In install handler ctx isn't directly available, so we just let the promise float
-  p.catch(e => console.log('background index error:', e && e.message));
-}
-
-// ---- Inlined UI HTML --------------------------------------------------------
+// ---- UI HTML ----------------------------------------------------------------
 
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -297,10 +208,9 @@ const HTML = `<!DOCTYPE html>
     input[type=text],input[type=password],input[type=url]{width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:3px;color:var(--text);font-family:var(--mono);font-size:.82rem;padding:.7rem .9rem;outline:none;transition:border-color .15s,box-shadow .15s;-webkit-appearance:none}
     input::placeholder{color:var(--muted)}
     input:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,92,246,.1)}
-    .hint{font-family:var(--mono);font-size:.6rem;color:var(--muted);margin-top:.35rem}
     .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;font-family:var(--cond);font-weight:700;font-size:.9rem;letter-spacing:.12em;text-transform:uppercase;border:none;border-radius:3px;cursor:pointer;transition:all .15s;padding:.75rem 1.5rem;white-space:nowrap}
     .btn-primary{background:var(--purple);color:#fff;box-shadow:0 2px 12px rgba(139,92,246,.3)}
-    .btn-primary:hover:not(:disabled){background:var(--purple2);transform:translateY(-1px);box-shadow:0 4px 20px rgba(139,92,246,.45)}
+    .btn-primary:hover:not(:disabled){background:var(--purple2);transform:translateY(-1px)}
     .btn-primary:disabled{opacity:.4;cursor:not-allowed}
     .btn-lime{background:var(--lime);color:#0e0e0e;box-shadow:0 2px 12px rgba(163,230,53,.25)}
     .btn-lime:hover{background:var(--lime2);transform:translateY(-1px)}
@@ -337,7 +247,6 @@ const HTML = `<!DOCTYPE html>
     footer{text-align:center;padding:2rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:1.5rem;flex-wrap:wrap}
     .footer-brand{font-family:var(--cond);font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
     .footer-brand span{color:var(--lime)}
-    .footer-links{display:flex;gap:1rem}
     .footer-links a{font-family:var(--mono);font-size:.62rem;color:var(--muted);text-decoration:none;letter-spacing:.08em;text-transform:uppercase;transition:color .15s}
     .footer-links a:hover{color:var(--purple2)}
     @media(max-width:500px){h1{font-size:2.6rem}.card{padding:1.25rem}.info-grid{grid-template-columns:1fr}header{padding:2.5rem 1.25rem 1.5rem}main{padding:0 1.25rem 3rem}}
@@ -357,7 +266,7 @@ const HTML = `<!DOCTYPE html>
   <main>
     <div class="card" id="cred-card">
       <div class="card-hdr"><span class="card-num">01</span><span class="card-title">Connect Your Provider</span></div>
-      <div class="field"><label>Server URL</label><input id="server" type="url" placeholder="http://your-provider.com:8080" autocomplete="off"/><div class="hint">Full URL including port — no trailing slash</div></div>
+      <div class="field"><label>Server URL</label><input id="server" type="url" placeholder="http://your-provider.com:8080" autocomplete="off"/><div class="hint" style="font-family:var(--mono);font-size:.6rem;color:var(--muted);margin-top:.35rem">Full URL including port — no trailing slash</div></div>
       <div class="field"><label>Username</label><input id="username" type="text" placeholder="your_username" autocomplete="off"/></div>
       <div class="field"><label>Password</label><input id="password" type="password" placeholder="••••••••••••" autocomplete="off"/></div>
       <button class="btn btn-primary btn-full" id="vbtn" onclick="doValidate()">Verify Credentials</button>
@@ -379,16 +288,15 @@ const HTML = `<!DOCTYPE html>
       <div class="card-hdr" style="margin-bottom:1rem"><span class="card-num">?</span><span class="card-title">How to Install</span></div>
       <div class="steps">
         <div class="step"><div class="step-num">1</div><div class="step-text">Click <strong>Install in Stremio</strong> — Stremio opens and asks to confirm.</div></div>
-        <div class="step"><div class="step-num">2</div><div class="step-text">Or copy the <strong>Addon URL</strong> and paste in Stremio → Add-ons → Community → Install URL.</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text">Or copy the <strong>Addon URL</strong> and paste it in Stremio → Add-ons → Install from URL.</div></div>
         <div class="step"><div class="step-num">3</div><div class="step-text">Your library appears under <strong>Discover → XC Movies</strong> and <strong>XC Series</strong>.</div></div>
         <div class="step"><div class="step-num">4</div><div class="step-text"><strong>First stream</strong> on any title may take 10-30s while your library index builds. All streams after that are instant.</div></div>
       </div>
-      <div class="sec-note"><div style="font-size:.9rem;flex-shrink:0;margin-top:1px">🔒</div><div class="sec-text">Credentials are <strong>AES-256-GCM encrypted</strong> inside the addon token. They are <strong>never stored</strong> on any server. The stream index is stored as an anonymous hash — no usernames, no server URLs, no PII.</div></div>
+      <div class="sec-note"><div style="font-size:.9rem;flex-shrink:0;margin-top:1px">🔒</div><div class="sec-text">Credentials are <strong>AES-256-GCM encrypted</strong> inside the addon URL token — <strong>never stored</strong> on any server. The stream index is stored as an anonymous hash with no usernames, no server URLs, no PII.</div></div>
     </div>
   </main>
   <footer>
     <div class="footer-brand">Low<span>Def</span>Pirate</div>
-    <div style="font-size:.6rem;color:var(--border2)">·</div>
     <div class="footer-links"><a href="https://lowdefpirate.link" target="_blank">lowdefpirate.link</a></div>
   </footer>
 </div>
@@ -406,11 +314,9 @@ async function doValidate(){
   showStatus(st,'loading',null,'Connecting to your provider...');
   try{
     const p=new URLSearchParams({server,username,password});
-    const vr=await fetch('/validate?'+p);
-    const vd=await vr.json();
+    const vr=await fetch('/validate?'+p);const vd=await vr.json();
     if(!vd.valid){showStatus(st,'fail','✕',vd.error||'Invalid credentials');btn.disabled=false;btn.textContent='Verify Credentials';return;}
-    const ir=await fetch('/install?'+p);
-    installData=await ir.json();
+    const ir=await fetch('/install?'+p);installData=await ir.json();
     if(installData.error){showStatus(st,'fail','✕',installData.error);btn.disabled=false;btn.textContent='Verify Credentials';return;}
     showStatus(st,'ok','✓','Connected · '+vd.username);
     showResult(vd,installData);
@@ -424,7 +330,7 @@ function showResult(acct,inst){
   const card=document.getElementById('result-card');
   const grid=document.getElementById('info-grid');
   let exp='—',ec='';
-  if(acct.expiry){const d=new Date(parseInt(acct.expiry)*1000);const dl=Math.floor((d-new Date())/86400000);exp=d.toLocaleDateString();if(dl<0){ec='red';exp+=' (expired)';}else if(dl<30){ec='yellow';exp+=' ('+dl+'d)';}else ec='green';}
+  if(acct.expiry){const d=new Date(parseInt(acct.expiry)*1000);const dl=Math.floor((d-new Date())/86400000);exp=d.toLocaleDateString();if(dl<0){ec='red';}else if(dl<30){ec='yellow';}else ec='green';}
   const sc=acct.status==='Active'?'green':'red';
   grid.innerHTML='<div class="info-item"><div class="info-item-label">Username</div><div class="info-item-value">'+esc(acct.username||'—')+'</div></div><div class="info-item"><div class="info-item-label">Status</div><div class="info-item-value '+sc+'">'+esc(acct.status||'—')+'</div></div><div class="info-item"><div class="info-item-label">Expires</div><div class="info-item-value '+ec+'">'+exp+'</div></div><div class="info-item"><div class="info-item-label">Connections</div><div class="info-item-value">'+(acct.activeConnections||0)+' / '+(acct.maxConnections||'?')+'</div></div>';
   document.getElementById('url-text').textContent=inst.addonUrl;
@@ -434,8 +340,7 @@ function showResult(acct,inst){
 }
 function openStremio(){if(installData&&installData.stremioUrl)window.location.href=installData.stremioUrl;}
 async function copyUrl(btn){
-  const text=document.getElementById('url-text').textContent;
-  if(!text)return;
+  const text=document.getElementById('url-text').textContent;if(!text)return;
   try{await navigator.clipboard.writeText(text);}catch{const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);}
   if(btn&&btn.classList){const o=btn.textContent;btn.textContent='✓ Copied';btn.classList.add('copied');setTimeout(()=>{btn.textContent=o;btn.classList.remove('copied');},2000);}
 }
