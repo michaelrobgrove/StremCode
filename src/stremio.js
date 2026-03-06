@@ -1,14 +1,14 @@
 /**
- * StremCodes - Stremio Protocol Builders v1.1
+ * StremCodes - Stremio Protocol Builders v1.2
  *
- * Key change: stream resource now responds to tt/kitsu IMDB IDs
- * so XC streams appear alongside Torrentio on ANY title page.
+ * Key change: stream matching now uses TMDB ID lookup via IMDB→TMDB
+ * conversion for reliable matching. Fuzzy text matching is a fallback only.
  */
 
 export function buildManifest(origin, token) {
   return {
     id: 'community.stremcodes',
-    version: '1.1.0',
+    version: '1.2.0',
     name: 'StremCodes',
     description: 'Your Xtream Codes IPTV library in Stremio. Streams appear on every matching title alongside Torrentio and other addons.',
     logo: `${origin}/logo.png`,
@@ -47,7 +47,6 @@ export function buildManifest(origin, token) {
       },
       {
         // Respond to IMDB IDs (tt...) AND our own xc_ IDs
-        // This is what makes streams appear on Chicago PD, Breaking Bad, etc.
         name: 'stream',
         types: ['movie', 'series'],
         idPrefixes: ['tt', 'kitsu', 'xc_'],
@@ -158,7 +157,7 @@ async function buildStreamForXcId(client, type, id) {
 }
 
 /**
- * IMDB ID → look up title name → fuzzy match against XC library → stream URL
+ * IMDB ID → TMDB ID → match against XC library by tmdb field
  *
  * Series ID format from Stremio: tt2805096:7:1  (imdbId:season:episode)
  * Movie ID format:                tt1234567
@@ -175,43 +174,157 @@ async function buildStreamForImdbId(client, type, id) {
     episode = parseInt(parts[2]);
   }
 
-  // Fetch the human title from Cinemeta (Stremio's metadata service)
-  const titleInfo = await fetchCinemetaTitle(type, imdbId);
-  if (!titleInfo) return [];
+  // Step 1: resolve IMDB → TMDB id
+  const tmdbId = await imdbToTmdbId(imdbId, type);
 
   if (type === 'movie') {
-    return matchVodStream(client, titleInfo.name, titleInfo.year);
+    // Try TMDB match first (reliable), fall back to title fuzzy match
+    const streams = await matchVodByTmdb(client, tmdbId, imdbId);
+    return streams;
   }
 
   if (type === 'series' && season !== null && episode !== null) {
-    return matchSeriesStream(client, titleInfo.name, season, episode);
+    const streams = await matchSeriesByTmdb(client, tmdbId, imdbId, season, episode);
+    return streams;
   }
 
   return [];
 }
 
-async function fetchCinemetaTitle(type, imdbId) {
-  const cinemetaType = type === 'series' ? 'series' : 'movie';
-  const url = `https://v3-cinemeta.strem.io/meta/${cinemetaType}/${imdbId}.json`;
+/**
+ * Convert IMDB ID to TMDB ID using the free TMDB find endpoint (no API key needed for this).
+ * Falls back to Cinemeta title lookup for fuzzy matching if TMDB lookup fails.
+ */
+async function imdbToTmdbId(imdbId, type) {
+  // Use Cinemeta which reliably has tmdb_id in its response
   try {
+    const cinemetaType = type === 'series' ? 'series' : 'movie';
+    const url = `https://v3-cinemeta.strem.io/meta/${cinemetaType}/${imdbId}.json`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'StremCodes/1.1' },
+      headers: { 'User-Agent': 'StremCodes/1.2' },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    if (!data?.meta) return null;
-    return { name: data.meta.name, year: data.meta.year };
+    // Cinemeta embeds the TMDB id in the links array or directly
+    const meta = data?.meta;
+    if (!meta) return null;
+
+    // Try direct tmdb field
+    if (meta.tmdb_id) return String(meta.tmdb_id);
+
+    // Try links array: { name: 'tmdb', url: 'https://www.themoviedb.org/movie/12345' }
+    if (Array.isArray(meta.links)) {
+      for (const link of meta.links) {
+        const m = link.url?.match(/themoviedb\.org\/(movie|tv)\/(\d+)/);
+        if (m) return m[2];
+      }
+    }
+
+    // Return title info for fallback fuzzy matching
+    return { name: meta.name, year: meta.year, fallback: true };
   } catch {
     return null;
   }
 }
 
-async function matchVodStream(client, titleName, titleYear) {
+/**
+ * Match VOD stream by TMDB id.
+ * If tmdbId is an object with { name, fallback }, use fuzzy matching instead.
+ */
+async function matchVodByTmdb(client, tmdbIdOrFallback, imdbId) {
   let streams;
   try { streams = await client.getVodStreams(); } catch { return []; }
   if (!Array.isArray(streams)) return [];
 
+  // TMDB ID match (most reliable)
+  if (tmdbIdOrFallback && typeof tmdbIdOrFallback === 'string') {
+    const tmdbId = tmdbIdOrFallback;
+    const matches = streams.filter(s => s.tmdb && String(s.tmdb) === tmdbId);
+    if (matches.length > 0) {
+      return matches.map(s => {
+        const ext = s.container_extension || 'mkv';
+        return {
+          url: client.getVodStreamUrl(s.stream_id, ext),
+          name: 'StremCodes',
+          description: `XC · ${cleanName(s.name)} · ${ext.toUpperCase()}`,
+          behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' },
+        };
+      });
+    }
+    // TMDB matched nothing — fall through to fuzzy
+  }
+
+  // Fallback: fuzzy title match using name from Cinemeta
+  if (tmdbIdOrFallback?.fallback) {
+    return matchVodByTitle(streams, client, tmdbIdOrFallback.name, tmdbIdOrFallback.year);
+  }
+
+  return [];
+}
+
+/**
+ * Match series by TMDB id, then find the right episode.
+ */
+async function matchSeriesByTmdb(client, tmdbIdOrFallback, imdbId, season, episode) {
+  let seriesList;
+  try { seriesList = await client.getSeriesList(); } catch { return []; }
+  if (!Array.isArray(seriesList)) return [];
+
+  let bestMatch = null;
+
+  // TMDB ID match
+  if (tmdbIdOrFallback && typeof tmdbIdOrFallback === 'string') {
+    const tmdbId = tmdbIdOrFallback;
+    bestMatch = seriesList.find(s => s.tmdb && String(s.tmdb) === tmdbId);
+  }
+
+  // Fallback: fuzzy title match
+  if (!bestMatch && tmdbIdOrFallback?.fallback) {
+    const needle = normalizeTitle(tmdbIdOrFallback.name);
+    const candidates = seriesList.filter(s => {
+      if (!s.name) return false;
+      const hay = normalizeTitle(s.name);
+      return hay === needle || hay.includes(needle) || needle.includes(hay);
+    });
+    if (candidates.length > 0) {
+      const scored = candidates
+        .map(s => ({ s, score: titleSimilarity(normalizeTitle(s.name), needle) }))
+        .sort((a, b) => b.score - a.score);
+      bestMatch = scored[0].s;
+    }
+  }
+
+  if (!bestMatch) return [];
+
+  let info;
+  try { info = await client.getSeriesInfo(bestMatch.series_id); } catch { return []; }
+
+  const eps = info?.episodes || {};
+  // XC sometimes uses "1", "01", etc as season keys
+  const seasonEps =
+    eps[String(season)] ||
+    eps[String(season).padStart(2, '0')] ||
+    [];
+
+  if (!Array.isArray(seasonEps)) return [];
+
+  const ep = seasonEps.find(e => parseInt(e.episode_num) === episode);
+  if (!ep) return [];
+
+  const ext = ep.container_extension || 'mkv';
+  return [{
+    url: client.getSeriesStreamUrl(ep.id, ext),
+    name: 'StremCodes',
+    description: `XC · S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')} · ${ext.toUpperCase()}`,
+    behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' },
+  }];
+}
+
+/**
+ * Pure title-based fuzzy match for VOD (used as fallback only)
+ */
+function matchVodByTitle(streams, client, titleName, titleYear) {
   const needle = normalizeTitle(titleName);
 
   const candidates = streams.filter(s => {
@@ -237,50 +350,6 @@ async function matchVodStream(client, titleName, titleYear) {
       behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' },
     };
   });
-}
-
-async function matchSeriesStream(client, titleName, season, episode) {
-  let seriesList;
-  try { seriesList = await client.getSeriesList(); } catch { return []; }
-  if (!Array.isArray(seriesList)) return [];
-
-  const needle = normalizeTitle(titleName);
-  const candidates = seriesList.filter(s => {
-    if (!s.name) return false;
-    const hay = normalizeTitle(s.name);
-    return hay === needle || hay.includes(needle) || needle.includes(hay);
-  });
-
-  if (candidates.length === 0) return [];
-
-  const scored = candidates
-    .map(s => ({ s, score: titleSimilarity(normalizeTitle(s.name), needle) }))
-    .sort((a, b) => b.score - a.score);
-
-  const bestMatch = scored[0].s;
-
-  let info;
-  try { info = await client.getSeriesInfo(bestMatch.series_id); } catch { return []; }
-
-  const eps = info?.episodes || {};
-  // XC sometimes uses "1", "01", etc as season keys
-  const seasonEps =
-    eps[String(season)] ||
-    eps[String(season).padStart(2, '0')] ||
-    [];
-
-  if (!Array.isArray(seasonEps)) return [];
-
-  const ep = seasonEps.find(e => parseInt(e.episode_num) === episode);
-  if (!ep) return [];
-
-  const ext = ep.container_extension || 'mkv';
-  return [{
-    url: client.getSeriesStreamUrl(ep.id, ext),
-    name: 'StremCodes',
-    description: `XC · S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')} · ${ext.toUpperCase()}`,
-    behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' },
-  }];
 }
 
 // ─── XC → Stremio converters ──────────────────────────────────────────────────
