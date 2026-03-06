@@ -90,7 +90,7 @@ async function buildStreamImdb(client, type, rawId, credHash, kv) {
 
   // Parallel: Cinemeta + index build
   const [resolved, { vodIndex, seriesIndex }] = await Promise.all([
-    resolveImdb(imdbId, type),
+    resolveImdb(imdbId, type, kv),
     getOrBuildIndex(client, credHash, kv),
   ]);
 
