@@ -1,6 +1,0 @@
-node_modules/
-.dev.vars
-.wrangler/
-dist/
-.env
-*.local
