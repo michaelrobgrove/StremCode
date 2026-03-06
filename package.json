@@ -1,17 +1,14 @@
 {
   "name": "stremcodes",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "description": "Stremio addon for Xtream Codes IPTV - LowDefPirate edition",
   "private": true,
   "scripts": {
-    "dev": "wrangler pages dev public --compatibility-date=2024-01-01",
-    "deploy": "wrangler pages deploy public",
-    "build": "echo 'No build step required'"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
     "wrangler": "^3.0.0"
   },
-  "engines": {
-    "node": ">=18"
-  }
+  "engines": { "node": ">=18" }
 }

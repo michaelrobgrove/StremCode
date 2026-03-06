@@ -1,124 +1,64 @@
 /**
- * StremCodes - Credential Encryption
- *
- * Uses AES-GCM 256-bit encryption to safely embed
- * Xtream Codes credentials in the Stremio addon URL token.
- *
- * The token is base64url-encoded and contains:
- * [iv (12 bytes)] + [ciphertext] + [auth tag (16 bytes)]
+ * AES-256-GCM credential encryption
+ * Credentials are encrypted into the addon URL token — never stored anywhere.
  */
 
 const ALGO = 'AES-GCM';
-const KEY_LEN = 256;
 const IV_LEN = 12;
 
-/**
- * Derive a CryptoKey from a string secret using PBKDF2
- */
 async function deriveKey(secret) {
   const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(secret),
-    { name: 'PBKDF2' },
-    false,
-    ['deriveKey']
-  );
-
+  const mat = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'PBKDF2' }, false, ['deriveKey']);
   return crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: enc.encode('stremcodes-v1'),
-      iterations: 100_000,
-      hash: 'SHA-256',
-    },
-    keyMaterial,
-    { name: ALGO, length: KEY_LEN },
+    { name: 'PBKDF2', salt: enc.encode('stremcodes-v2'), iterations: 100000, hash: 'SHA-256' },
+    mat,
+    { name: ALGO, length: 256 },
     false,
     ['encrypt', 'decrypt']
   );
 }
 
-/**
- * Encrypt credentials object → base64url token
- */
-export async function encryptCredentials(credentials, secret) {
+export async function encryptCredentials(creds, secret) {
   const key = await deriveKey(secret);
   const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
-  const enc = new TextEncoder();
-  const plaintext = enc.encode(JSON.stringify(credentials));
-
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: ALGO, iv },
-    key,
-    plaintext
-  );
-
-  // Combine iv + ciphertext into one buffer
-  const combined = new Uint8Array(IV_LEN + ciphertext.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(ciphertext), IV_LEN);
-
-  // Base64url encode (URL-safe, no padding issues)
-  return bufferToBase64url(combined);
+  const ct = await crypto.subtle.encrypt({ name: ALGO, iv }, key, new TextEncoder().encode(JSON.stringify(creds)));
+  const out = new Uint8Array(IV_LEN + ct.byteLength);
+  out.set(iv);
+  out.set(new Uint8Array(ct), IV_LEN);
+  return toBase64url(out);
 }
 
-/**
- * Decrypt base64url token → credentials object
- */
 export async function decryptCredentials(token, secret) {
-  const combined = base64urlToBuffer(token);
-  if (combined.length <= IV_LEN) {
-    throw new Error('Token too short');
-  }
-
-  const iv = combined.slice(0, IV_LEN);
-  const ciphertext = combined.slice(IV_LEN);
+  const buf = fromBase64url(token);
+  if (buf.length <= IV_LEN) throw new Error('Token too short');
   const key = await deriveKey(secret);
-
-  let plaintext;
-  try {
-    plaintext = await crypto.subtle.decrypt(
-      { name: ALGO, iv },
-      key,
-      ciphertext
-    );
-  } catch {
-    throw new Error('Decryption failed - invalid token or wrong secret');
-  }
-
-  const dec = new TextDecoder();
-  return JSON.parse(dec.decode(plaintext));
+  const plain = await crypto.subtle.decrypt({ name: ALGO, iv: buf.slice(0, IV_LEN) }, key, buf.slice(IV_LEN));
+  return JSON.parse(new TextDecoder().decode(plain));
 }
 
 /**
- * Hash credentials for cache keys (non-reversible)
+ * Anonymous hash of credentials — used as KV key.
+ * The hash reveals nothing about the credentials themselves.
  */
-export async function hashCredentials(server, username) {
+export async function credHash(server, username, password) {
   const enc = new TextEncoder();
-  const data = enc.encode(`${server}:${username}`);
+  const data = enc.encode(server + ':' + username + ':' + password);
   const hash = await crypto.subtle.digest('SHA-256', data);
-  return bufferToBase64url(new Uint8Array(hash)).slice(0, 16);
+  return toBase64url(new Uint8Array(hash)).slice(0, 24);
 }
 
-// Helpers
-function bufferToBase64url(buffer) {
-  let binary = '';
-  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+function toBase64url(buf) {
+  let s = '';
+  for (const b of buf) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-function base64urlToBuffer(str) {
-  const padded = str.replace(/-/g, '+').replace(/_/g, '/');
-  const pad = padded.length % 4;
-  const base64 = pad ? padded + '==='.slice(0, 4 - pad) : padded;
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+function fromBase64url(s) {
+  const p = s.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = p.length % 4;
+  const b64 = pad ? p + '==='.slice(0, 4 - pad) : p;
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
