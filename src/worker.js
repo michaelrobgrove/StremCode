@@ -319,10 +319,10 @@ const HTML = `<!DOCTYPE html>
 var installData = null;
 
 async function doSetup() {
-  var server = document.getElementById('inp-server').value.trim().replace(/\/+$/, '');
+  var server = document.getElementById('inp-server').value.trim(); while(server.endsWith('/')) server = server.slice(0,-1);
   var username = document.getElementById('inp-user').value.trim();
   var password = document.getElementById('inp-pass').value;
-  var proxy = document.getElementById('inp-proxy').value.trim().replace(/\/+$/, '');
+  var proxy = document.getElementById('inp-proxy').value.trim(); while(proxy.endsWith('/')) proxy = proxy.slice(0,-1);
   var btn = document.getElementById('setup-btn');
 
   if (!server || !username || !password) { showStatus('fail', 'Please fill in server, username and password.'); return; }
@@ -509,7 +509,7 @@ async function credHash(server, username, password) {
   var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
   var s = '';
   new Uint8Array(buf).forEach(function(b) { s += String.fromCharCode(b); });
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '').slice(0, 24);
+  return btoa(s).split('+').join('-').split('/').join('_').split('=').join('').slice(0, 24);
 }
 
 function esc(s) {
