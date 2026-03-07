@@ -100,7 +100,7 @@ async function buildStreamImdb(client, type, rawId, credHash, kv) {
   if (type === 'movie') {
     const entry = vodIndex.get(tmdbId);
     if (!entry) { console.log('TMDB', tmdbId, 'not in VOD index'); return []; }
-    return [{ url: client.vodUrl(entry.streamId, entry.ext), name: 'StremCodes', description: (entry.name || 'XC') + ' · ' + entry.ext.toUpperCase(), behaviorHints: { notWebReady: entry.ext !== 'mp4', bingeGroup: 'stremcodes' } }];
+    return [{ url: client.vodUrl(entry.id, entry.ext), name: 'StremCodes', description: (entry.name || 'XC') + ' · ' + entry.ext.toUpperCase(), behaviorHints: { notWebReady: entry.ext !== 'mp4', bingeGroup: 'stremcodes' } }];
   }
 
   if (type === 'series' && season !== null) {
