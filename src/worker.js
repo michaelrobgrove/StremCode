@@ -1,12 +1,18 @@
 /**
- * StremCodes Worker v2.0 — LowDefPirate
+ * StremCodes Worker v2.1 — LowDefPirate
  *
- * Security model:
- * - Credentials: AES-256-GCM encrypted in addon URL token, never stored
- * - KV stores only: sha256(server+user+pass) -> TMDB index
- *   No credentials, no usernames, no server URLs — just an anonymous hash
- * - Cinemeta IMDB->TMDB mappings cached 30 days (permanent mapping)
- * - TMDB index cached 6 hours (catches daily library changes)
+ * Key change from v2.0:
+ * Index building moved to CLIENT SIDE (browser) to avoid CF IP blocks.
+ * Browser fetches XC library from user's own IP, builds TMDB map,
+ * POSTs it here. CF only stores and looks up — never contacts XC for index.
+ *
+ * CF only contacts XC for:
+ * - Individual episode info (getSeriesInfo) — small, not blocked
+ * - Credential validation on install (getPlayerInfo) — optional, small
+ *
+ * Storage (KV):
+ * - 'idx:<hash>'  → TMDB index (sent from browser, TTL 24h)
+ * - 'cm:<imdbId>' → Cinemeta TMDB resolution (30 day TTL)
  */
 
 import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
@@ -15,7 +21,7 @@ import { buildManifest, buildCatalog, buildMeta, buildStream } from './stremio.j
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
   'Content-Type': 'application/json',
 };
@@ -23,17 +29,16 @@ const CORS = {
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-    if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
 
     const url = new URL(request.url);
     const parts = url.pathname.split('/').filter(Boolean);
 
     try {
       if (parts.length === 0) return serveUI();
-      if (parts[0] === 'health')   return json({ status: 'ok', version: '2.0.0' });
-      if (parts[0] === 'validate') return handleValidate(url, env);
-      if (parts[0] === 'install')  return handleInstall(url, env, ctx);
-      if (parts.length >= 2)       return handleAddon(parts[0], parts.slice(1), url, env, ctx);
+      if (parts[0] === 'health')  return json({ status: 'ok', version: '2.1.0' });
+      if (parts[0] === 'install') return handleInstall(request, url, env);
+      if (parts[0] === 'index')   return handleIndexUpload(request, env);
+      if (parts.length >= 2)      return handleAddon(parts[0], parts.slice(1), url, env, ctx);
       return json({ error: 'Not found' }, 404);
     } catch (err) {
       console.error('Worker error:', err && err.message);
@@ -42,57 +47,58 @@ export default {
   }
 };
 
-// ---- /validate --------------------------------------------------------------
+// ---- POST /install ----------------------------------------------------------
+// Receives {server, username, password} — encrypts into token, returns addon URL
+// No XC contact from CF — validation was done client-side in browser
 
-async function handleValidate(url, env) {
-  const server   = url.searchParams.get('server');
-  const username = url.searchParams.get('username');
-  const password = url.searchParams.get('password');
-  if (!server || !username || !password) return json({ valid: false, error: 'Missing parameters' }, 400);
-  try {
-    const client = new XtreamClient(server, username, password);
-    const info = await client.getPlayerInfo();
-    if (info && info.user_info) {
-      return json({
-        valid: true,
-        username: info.user_info.username,
-        status: info.user_info.status,
-        expiry: info.user_info.exp_date,
-        maxConnections: info.user_info.max_connections,
-        activeConnections: info.user_info.active_cons,
-      });
-    }
-    // Log what we actually got back to help debug
-    console.log('Validate: unexpected response:', JSON.stringify(info).slice(0, 200));
-    return json({ valid: false, error: 'Invalid credentials', debug: JSON.stringify(info).slice(0, 200) });
-  } catch (e) {
-    console.log('Validate error:', e && e.message, 'server:', server);
-    return json({ valid: false, error: 'Could not reach server: ' + (e && e.message) });
-  }
-}
-
-// ---- /install ---------------------------------------------------------------
-
-async function handleInstall(url, env, ctx) {
-  const server   = url.searchParams.get('server');
-  const username = url.searchParams.get('username');
-  const password = url.searchParams.get('password');
+async function handleInstall(request, url, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+  const { server, username, password } = body || {};
   if (!server || !username || !password) return json({ error: 'Missing parameters' }, 400);
 
   const secret = env.ENCRYPTION_SECRET || 'stremcodes-dev-secret-change-me';
   const token = await encryptCredentials({ server, username, password }, secret);
+  const hash = await credHash(server, username, password);
   const addonUrl   = url.origin + '/' + token + '/manifest.json';
   const stremioUrl = 'stremio://' + url.host + '/' + token + '/manifest.json';
 
-  // Kick off index build in background so first stream request is faster
-  if (ctx && ctx.waitUntil && env.INDEX_CACHE) {
-    const { getOrBuildIndex } = await import('./index-builder.js');
-    const client = new XtreamClient(server, username, password);
-    const hash = await credHash(server, username, password);
-    ctx.waitUntil(getOrBuildIndex(client, hash, env.INDEX_CACHE));
+  return json({ token, hash, addonUrl, stremioUrl });
+}
+
+// ---- POST /index ------------------------------------------------------------
+// Receives {hash, vod: {...}, series: {...}} from browser after client-side build
+// Stores in KV under the hash — no credentials ever stored
+
+async function handleIndexUpload(request, env) {
+  if (request.method !== 'POST') return json({ error: 'POST required' }, 405);
+
+  let body;
+  try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+
+  const { hash, vod, series } = body || {};
+  if (!hash || typeof vod !== 'object' || typeof series !== 'object') {
+    return json({ error: 'Missing hash, vod, or series' }, 400);
   }
 
-  return json({ token, addonUrl, stremioUrl });
+  if (!env.INDEX_CACHE) return json({ error: 'KV not configured' }, 500);
+
+  const payload = {
+    builtAt: Date.now(),
+    vod,
+    series,
+  };
+
+  try {
+    await env.INDEX_CACHE.put('idx:' + hash, JSON.stringify(payload), {
+      expirationTtl: 25 * 60 * 60, // 25 hours
+    });
+    console.log('[index] stored for hash', hash, '- vod entries:', Object.keys(vod).length, 'series:', Object.keys(series).length);
+    return json({ ok: true, vodEntries: Object.keys(vod).length, seriesEntries: Object.keys(series).length });
+  } catch (e) {
+    console.error('[index] KV write failed:', e && e.message);
+    return json({ error: 'KV write failed' }, 500);
+  }
 }
 
 // ---- /:token/... ------------------------------------------------------------
@@ -153,12 +159,6 @@ async function handleAddon(token, path, url, env, ctx) {
   return json({ error: 'Not found' }, 404);
 }
 
-// ---- UI ---------------------------------------------------------------------
-
-function serveUI() {
-  return new Response(HTML, { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
-}
-
 // ---- Helpers ----------------------------------------------------------------
 
 function json(data, statusOrHeaders, extra) {
@@ -168,7 +168,17 @@ function json(data, statusOrHeaders, extra) {
   return new Response(JSON.stringify(data), { status, headers: { ...CORS, ...addH } });
 }
 
-// ---- UI HTML ----------------------------------------------------------------
+function serveUI() {
+  return new Response(HTML, { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+}
+
+// ---- UI ---------------------------------------------------------------------
+// The install page does ALL the heavy lifting client-side:
+// 1. Validates credentials directly against XC server (browser -> XC, no CF involved)
+// 2. Fetches full VOD + series library (browser -> XC, user's home IP)
+// 3. Builds TMDB index map in browser
+// 4. POSTs index to /index (browser -> CF KV)
+// 5. POSTs credentials to /install (browser -> CF, returns encrypted token)
 
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -209,17 +219,21 @@ const HTML = `<!DOCTYPE html>
     .field{margin-bottom:1.1rem}
     label{display:block;font-family:var(--mono);font-size:.62rem;font-weight:700;color:var(--muted);margin-bottom:.45rem;letter-spacing:.14em;text-transform:uppercase}
     input[type=text],input[type=password],input[type=url]{width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:3px;color:var(--text);font-family:var(--mono);font-size:.82rem;padding:.7rem .9rem;outline:none;transition:border-color .15s,box-shadow .15s;-webkit-appearance:none}
-    input::placeholder{color:var(--muted)}
-    input:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,92,246,.1)}
+    input::placeholder{color:var(--muted)}input:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,92,246,.1)}
     .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;font-family:var(--cond);font-weight:700;font-size:.9rem;letter-spacing:.12em;text-transform:uppercase;border:none;border-radius:3px;cursor:pointer;transition:all .15s;padding:.75rem 1.5rem;white-space:nowrap}
     .btn-primary{background:var(--purple);color:#fff;box-shadow:0 2px 12px rgba(139,92,246,.3)}
     .btn-primary:hover:not(:disabled){background:var(--purple2);transform:translateY(-1px)}
     .btn-primary:disabled{opacity:.4;cursor:not-allowed}
     .btn-lime{background:var(--lime);color:#0e0e0e;box-shadow:0 2px 12px rgba(163,230,53,.25)}
-    .btn-lime:hover{background:var(--lime2);transform:translateY(-1px)}
+    .btn-lime:hover:not(:disabled){background:var(--lime2);transform:translateY(-1px)}
+    .btn-lime:disabled{opacity:.4;cursor:not-allowed}
     .btn-ghost{background:transparent;color:var(--muted2);border:1px solid var(--border2)}
     .btn-ghost:hover{border-color:var(--purple);color:var(--purple2)}
     .btn-full{width:100%}
+    .progress-wrap{margin-top:1rem;display:none}
+    .progress-label{font-family:var(--mono);font-size:.62rem;color:var(--muted2);margin-bottom:.5rem;display:flex;justify-content:space-between}
+    .progress-bar{height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+    .progress-fill{height:100%;background:linear-gradient(90deg,var(--purple),var(--lime));border-radius:2px;transition:width .3s ease;width:0%}
     .status{display:flex;align-items:flex-start;gap:.65rem;padding:.8rem 1rem;border-radius:3px;font-size:.78rem;font-family:var(--mono);margin-top:1rem;animation:fadeIn .2s ease}
     @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
     .status.loading{background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.2);color:var(--purple2)}
@@ -264,19 +278,23 @@ const HTML = `<!DOCTYPE html>
   <header>
     <div class="eyebrow"><div class="eyebrow-line"></div><div class="eyebrow-text">Xtream Codes · Stremio Addon</div></div>
     <h1><span class="l1">Strem</span><span class="l2">Codes</span></h1>
-    <p class="sub">Connect your XC provider to Stremio in seconds. Your credentials are AES-256 encrypted — never stored, never logged.</p>
+    <p class="sub">Connect your XC provider to Stremio. Credentials are AES-256 encrypted and never stored. Your library index is built from your device.</p>
   </header>
   <main>
     <div class="card" id="cred-card">
       <div class="card-hdr"><span class="card-num">01</span><span class="card-title">Connect Your Provider</span></div>
-      <div class="field"><label>Server URL</label><input id="server" type="url" placeholder="http://your-provider.com:8080" autocomplete="off"/><div class="hint" style="font-family:var(--mono);font-size:.6rem;color:var(--muted);margin-top:.35rem">Full URL including port — no trailing slash</div></div>
+      <div class="field"><label>Server URL</label><input id="server" type="url" placeholder="http://your-provider.com:8080" autocomplete="off"/><div style="font-family:var(--mono);font-size:.6rem;color:var(--muted);margin-top:.35rem">Full URL including port if needed — no trailing slash</div></div>
       <div class="field"><label>Username</label><input id="username" type="text" placeholder="your_username" autocomplete="off"/></div>
       <div class="field"><label>Password</label><input id="password" type="password" placeholder="••••••••••••" autocomplete="off"/></div>
-      <button class="btn btn-primary btn-full" id="vbtn" onclick="doValidate()">Verify Credentials</button>
+      <button class="btn btn-primary btn-full" id="vbtn" onclick="doSetup()">Connect &amp; Build Index</button>
       <div id="vstatus" style="display:none"></div>
+      <div class="progress-wrap" id="progress-wrap">
+        <div class="progress-label"><span id="progress-text">Fetching library...</span><span id="progress-pct">0%</span></div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      </div>
     </div>
     <div class="card result-card" id="result-card">
-      <div class="card-hdr"><span class="card-num lime">02</span><span class="card-title">Account &amp; Install</span></div>
+      <div class="card-hdr"><span class="card-num lime">02</span><span class="card-title">Ready to Install</span></div>
       <div class="info-grid" id="info-grid"></div>
       <div class="url-box" id="url-box" style="display:none">
         <div class="url-label">Addon URL</div>
@@ -284,18 +302,18 @@ const HTML = `<!DOCTYPE html>
         <button class="copy-btn" onclick="copyUrl(this)">Copy</button>
       </div>
       <div class="btn-row">
-        <button class="btn btn-lime" onclick="openStremio()">▶ &nbsp;Install in Stremio</button>
+        <button class="btn btn-lime" id="install-btn" onclick="openStremio()">▶ &nbsp;Install in Stremio</button>
         <button class="btn btn-ghost" onclick="copyUrl(this)">Copy URL</button>
       </div>
       <div class="divider"></div>
-      <div class="card-hdr" style="margin-bottom:1rem"><span class="card-num">?</span><span class="card-title">How to Install</span></div>
+      <div class="card-hdr" style="margin-bottom:1rem"><span class="card-num">?</span><span class="card-title">How It Works</span></div>
       <div class="steps">
-        <div class="step"><div class="step-num">1</div><div class="step-text">Click <strong>Install in Stremio</strong> — Stremio opens and asks to confirm.</div></div>
-        <div class="step"><div class="step-num">2</div><div class="step-text">Or copy the <strong>Addon URL</strong> and paste it in Stremio → Add-ons → Install from URL.</div></div>
-        <div class="step"><div class="step-num">3</div><div class="step-text">Your library appears under <strong>Discover → XC Movies</strong> and <strong>XC Series</strong>.</div></div>
-        <div class="step"><div class="step-num">4</div><div class="step-text"><strong>First stream</strong> on any title may take 10-30s while your library index builds. All streams after that are instant.</div></div>
+        <div class="step"><div class="step-num">1</div><div class="step-text">Your library index was built <strong>from your device</strong> — your provider never sees Cloudflare IPs.</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text">Streams on <strong>any Stremio title</strong> will show your XC content via TMDB matching.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-text">Index expires after <strong>24 hours</strong>. Re-run this setup to refresh it (catches new content).</div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-text">Browse your full library under <strong>Discover → XC Movies / XC Series</strong>.</div></div>
       </div>
-      <div class="sec-note"><div style="font-size:.9rem;flex-shrink:0;margin-top:1px">🔒</div><div class="sec-text">Credentials are <strong>AES-256-GCM encrypted</strong> inside the addon URL token — <strong>never stored</strong> on any server. The stream index is stored as an anonymous hash with no usernames, no server URLs, no PII.</div></div>
+      <div class="sec-note"><div style="font-size:.9rem;flex-shrink:0;margin-top:1px">🔒</div><div class="sec-text">Credentials are <strong>AES-256-GCM encrypted</strong> in the addon URL — never stored. The index is stored as <strong>anonymous hash → stream IDs</strong> only. No usernames, no server URLs, no PII.</div></div>
     </div>
   </main>
   <footer>
@@ -304,51 +322,215 @@ const HTML = `<!DOCTYPE html>
   </footer>
 </div>
 <script>
-let installData=null;
-async function doValidate(){
-  const server=document.getElementById('server').value.trim();
-  const username=document.getElementById('username').value.trim();
-  const password=document.getElementById('password').value;
-  const st=document.getElementById('vstatus');
-  const btn=document.getElementById('vbtn');
-  if(!server||!username||!password){showStatus(st,'fail','⚠','Please fill in all fields.');return;}
-  if(!server.startsWith('http')){showStatus(st,'fail','⚠','Server URL must start with http:// or https://');return;}
-  btn.disabled=true;btn.textContent='Verifying...';
-  showStatus(st,'loading',null,'Connecting to your provider...');
-  try{
-    const p=new URLSearchParams({server,username,password});
-    const vr=await fetch('/validate?'+p);const vd=await vr.json();
-    if(!vd.valid){showStatus(st,'fail','✕',vd.error||'Invalid credentials');btn.disabled=false;btn.textContent='Verify Credentials';return;}
-    const ir=await fetch('/install?'+p);installData=await ir.json();
-    if(installData.error){showStatus(st,'fail','✕',installData.error);btn.disabled=false;btn.textContent='Verify Credentials';return;}
-    showStatus(st,'ok','✓','Connected · '+vd.username);
-    showResult(vd,installData);
-  }catch(e){showStatus(st,'fail','✕','Network error — check the server URL.');btn.disabled=false;btn.textContent='Verify Credentials';}
+// ---- SHA-256 for credential hash (must match server-side) -------------------
+async function sha256b64url(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  let s = '';
+  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=/g,'').slice(0, 24);
 }
-function showStatus(el,type,icon,msg){
-  el.style.display='flex';el.className='status '+type;
-  el.innerHTML=type==='loading'?'<div class="spinner"></div><span>'+msg+'</span>':'<span>'+icon+'</span><span>'+msg+'</span>';
+
+// ---- State ------------------------------------------------------------------
+let installData = null;
+
+// ---- Main setup flow --------------------------------------------------------
+async function doSetup() {
+  const server   = document.getElementById('server').value.trim().replace(/\\/+$/, '');
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const st       = document.getElementById('vstatus');
+  const btn      = document.getElementById('vbtn');
+
+  if (!server || !username || !password) { showStatus(st,'fail','⚠','Please fill in all fields.'); return; }
+  if (!server.startsWith('http')) { showStatus(st,'fail','⚠','Server URL must start with http:// or https://'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+
+  // Step 1: Validate credentials directly from browser
+  setProgress(true, 'Validating credentials...', 5);
+  showStatus(st, 'loading', null, 'Connecting to your provider...');
+
+  let accountInfo;
+  try {
+    const base = server + '/player_api.php?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+    const r = await fetchWithTimeout(base + '&action=get_server_info', 10000);
+    const d = await r.json();
+    if (!d || !d.user_info) throw new Error('Invalid credentials or server did not respond correctly');
+    if (d.user_info.auth === 0) throw new Error('Wrong username or password');
+    accountInfo = d.user_info;
+  } catch(e) {
+    showStatus(st, 'fail', '✕', e.message || 'Could not reach server');
+    btn.disabled = false; btn.textContent = 'Connect & Build Index';
+    setProgress(false);
+    return;
+  }
+
+  showStatus(st, 'loading', null, 'Credentials verified. Fetching library...');
+  setProgress(true, 'Fetching VOD library...', 15);
+
+  // Step 2: Fetch full library from browser (user's IP — never blocked)
+  let vods = [], series = [];
+  try {
+    const base = server + '/player_api.php?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+    const [vodsRes, seriesRes] = await Promise.all([
+      fetchWithTimeout(base + '&action=get_vod_streams', 90000),
+      fetchWithTimeout(base + '&action=get_series', 90000),
+    ]);
+    setProgress(true, 'Parsing library...', 60);
+    vods   = await vodsRes.json();
+    series = await seriesRes.json();
+    if (!Array.isArray(vods))   vods   = [];
+    if (!Array.isArray(series)) series = [];
+  } catch(e) {
+    showStatus(st, 'fail', '✕', 'Failed to fetch library: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Connect & Build Index';
+    setProgress(false);
+    return;
+  }
+
+  setProgress(true, 'Building TMDB index...', 75);
+
+  // Step 3: Build TMDB index in browser
+  const vodIndex    = {};
+  const seriesIndex = {};
+
+  for (const s of vods) {
+    const tid = s.tmdb ? String(s.tmdb).trim() : '';
+    if (tid && tid !== '0' && !vodIndex[tid]) {
+      vodIndex[tid] = { id: s.stream_id, ext: s.container_extension || 'mkv', name: cleanName(s.name) };
+    }
+  }
+  for (const s of series) {
+    const tid = s.tmdb ? String(s.tmdb).trim() : '';
+    if (tid && tid !== '0' && !seriesIndex[tid]) {
+      seriesIndex[tid] = String(s.series_id);
+    }
+  }
+
+  setProgress(true, 'Uploading index...', 85);
+
+  // Step 4: Get credential hash and upload index to CF KV
+  const hash = await sha256b64url(server + ':' + username + ':' + password);
+
+  try {
+    const r = await fetch('/index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash, vod: vodIndex, series: seriesIndex }),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Index upload failed');
+  } catch(e) {
+    showStatus(st, 'fail', '✕', 'Failed to save index: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Connect & Build Index';
+    setProgress(false);
+    return;
+  }
+
+  setProgress(true, 'Generating addon URL...', 95);
+
+  // Step 5: Get encrypted addon token from worker
+  try {
+    const r = await fetch('/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server, username, password }),
+    });
+    installData = await r.json();
+    if (installData.error) throw new Error(installData.error);
+  } catch(e) {
+    showStatus(st, 'fail', '✕', 'Failed to generate addon URL: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Connect & Build Index';
+    setProgress(false);
+    return;
+  }
+
+  setProgress(true, 'Done!', 100);
+  const vodCount    = Object.keys(vodIndex).length;
+  const seriesCount = Object.keys(seriesIndex).length;
+  showStatus(st, 'ok', '✓', 'Indexed ' + vodCount.toLocaleString() + ' movies · ' + seriesCount.toLocaleString() + ' series');
+  showResult(accountInfo, installData, vodCount, seriesCount);
+  setTimeout(() => setProgress(false), 1000);
 }
-function showResult(acct,inst){
-  const card=document.getElementById('result-card');
-  const grid=document.getElementById('info-grid');
-  let exp='—',ec='';
-  if(acct.expiry){const d=new Date(parseInt(acct.expiry)*1000);const dl=Math.floor((d-new Date())/86400000);exp=d.toLocaleDateString();if(dl<0){ec='red';}else if(dl<30){ec='yellow';}else ec='green';}
-  const sc=acct.status==='Active'?'green':'red';
-  grid.innerHTML='<div class="info-item"><div class="info-item-label">Username</div><div class="info-item-value">'+esc(acct.username||'—')+'</div></div><div class="info-item"><div class="info-item-label">Status</div><div class="info-item-value '+sc+'">'+esc(acct.status||'—')+'</div></div><div class="info-item"><div class="info-item-label">Expires</div><div class="info-item-value '+ec+'">'+exp+'</div></div><div class="info-item"><div class="info-item-label">Connections</div><div class="info-item-value">'+(acct.activeConnections||0)+' / '+(acct.maxConnections||'?')+'</div></div>';
-  document.getElementById('url-text').textContent=inst.addonUrl;
-  document.getElementById('url-box').style.display='block';
+
+function showResult(acct, inst, vodCount, seriesCount) {
+  const card = document.getElementById('result-card');
+  const grid = document.getElementById('info-grid');
+  let exp = '—', ec = '';
+  if (acct.exp_date) {
+    const d = new Date(parseInt(acct.exp_date) * 1000);
+    const dl = Math.floor((d - new Date()) / 86400000);
+    exp = d.toLocaleDateString();
+    ec = dl < 0 ? 'red' : dl < 30 ? 'yellow' : 'green';
+  }
+  const sc = acct.status === 'Active' ? 'green' : 'red';
+  grid.innerHTML =
+    info('Username', esc(acct.username || '—'), '') +
+    info('Status', esc(acct.status || '—'), sc) +
+    info('Expires', exp, ec) +
+    info('Movies indexed', vodCount.toLocaleString(), 'green') +
+    info('Series indexed', seriesCount.toLocaleString(), 'green') +
+    info('Connections', (acct.active_cons||0) + ' / ' + (acct.max_connections||'?'), '');
+  document.getElementById('url-text').textContent = inst.addonUrl;
+  document.getElementById('url-box').style.display = 'block';
   card.classList.add('visible');
-  card.scrollIntoView({behavior:'smooth',block:'nearest'});
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
-function openStremio(){if(installData&&installData.stremioUrl)window.location.href=installData.stremioUrl;}
-async function copyUrl(btn){
-  const text=document.getElementById('url-text').textContent;if(!text)return;
-  try{await navigator.clipboard.writeText(text);}catch{const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);}
-  if(btn&&btn.classList){const o=btn.textContent;btn.textContent='✓ Copied';btn.classList.add('copied');setTimeout(()=>{btn.textContent=o;btn.classList.remove('copied');},2000);}
+
+function info(label, value, cls) {
+  return '<div class="info-item"><div class="info-item-label">' + label + '</div><div class="info-item-value ' + cls + '">' + value + '</div></div>';
 }
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-['server','username','password'].forEach(id=>document.getElementById(id).addEventListener('keydown',e=>{if(e.key==='Enter')doValidate();}));
+
+function openStremio() { if (installData && installData.stremioUrl) window.location.href = installData.stremioUrl; }
+
+async function copyUrl(btn) {
+  const text = document.getElementById('url-text').textContent;
+  if (!text) return;
+  try { await navigator.clipboard.writeText(text); } catch {
+    const t = document.createElement('textarea'); t.value = text;
+    document.body.appendChild(t); t.select(); document.execCommand('copy'); document.body.removeChild(t);
+  }
+  if (btn && btn.classList) {
+    const o = btn.textContent; btn.textContent = '✓ Copied'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = o; btn.classList.remove('copied'); }, 2000);
+  }
+}
+
+function setProgress(show, text, pct) {
+  const wrap = document.getElementById('progress-wrap');
+  wrap.style.display = show ? 'block' : 'none';
+  if (show) {
+    document.getElementById('progress-text').textContent = text || '';
+    document.getElementById('progress-pct').textContent  = (pct || 0) + '%';
+    document.getElementById('progress-fill').style.width = (pct || 0) + '%';
+  }
+}
+
+function showStatus(el, type, icon, msg) {
+  el.style.display = 'flex'; el.className = 'status ' + type;
+  el.innerHTML = type === 'loading'
+    ? '<div class="spinner"></div><span>' + msg + '</span>'
+    : '<span>' + icon + '</span><span>' + msg + '</span>';
+}
+
+function cleanName(n) {
+  if (!n) return '';
+  return n.replace(/\\b(4K|1080p|720p|480p|HDR|SDR|HEVC|x265|x264|AAC|AC3|BluRay|WEBRip|REPACK)\\b/gi, '')
+          .replace(/\\[.*?\\]/g, '').replace(/\\s{2,}/g, ' ').trim();
+}
+
+function fetchWithTimeout(url, ms) {
+  return fetch(url, { signal: AbortSignal.timeout(ms) });
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+['server','username','password'].forEach(id =>
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') doSetup(); })
+);
 </script>
 </body>
 </html>`;
