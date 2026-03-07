@@ -286,6 +286,7 @@ const HTML = `<!DOCTYPE html>
       <div class="field"><label>Server URL</label><input id="server" type="url" placeholder="http://your-provider.com:8080" autocomplete="off"/><div style="font-family:var(--mono);font-size:.6rem;color:var(--muted);margin-top:.35rem">Full URL including port if needed — no trailing slash</div></div>
       <div class="field"><label>Username</label><input id="username" type="text" placeholder="your_username" autocomplete="off"/></div>
       <div class="field"><label>Password</label><input id="password" type="password" placeholder="••••••••••••" autocomplete="off"/></div>
+      <div class="field"><label>Proxy URL</label><input id="proxy" type="url" placeholder="http://yourserver.com:6767" autocomplete="off"/><div style="font-family:var(--mono);font-size:.6rem;color:var(--muted);margin-top:.35rem">Your xc-proxy address — needed to reach your IPTV provider</div></div>
       <button class="btn btn-primary btn-full" id="vbtn" onclick="doSetup()">Connect &amp; Build Index</button>
       <div id="vstatus" style="display:none"></div>
       <div class="progress-wrap" id="progress-wrap">
@@ -344,17 +345,20 @@ async function doSetup() {
   if (!server || !username || !password) { showStatus(st,'fail','⚠','Please fill in all fields.'); return; }
   if (!server.startsWith('http')) { showStatus(st,'fail','⚠','Server URL must start with http:// or https://'); return; }
 
+  const proxyUrl = document.getElementById('proxy').value.trim().replace(/\/+$/, '');
+  if (!proxyUrl) { showStatus(st,'fail','⚠','Please enter your proxy URL (e.g. http://yourserver.com:6767)'); return; }
+
   btn.disabled = true;
   btn.textContent = 'Connecting...';
 
-  // Step 1: Validate credentials directly from browser
+  // Step 1: Validate credentials via proxy
   setProgress(true, 'Validating credentials...', 5);
   showStatus(st, 'loading', null, 'Connecting to your provider...');
 
   let accountInfo;
   try {
     const base = server + '/player_api.php?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
-    const r = await fetchWithTimeout(base + '&action=get_server_info', 10000);
+    const r = await xcFetch(proxyUrl, base + '&action=get_server_info', 10000);
     const d = await r.json();
     if (!d || !d.user_info) throw new Error('Invalid credentials or server did not respond correctly');
     if (d.user_info.auth === 0) throw new Error('Wrong username or password');
@@ -369,13 +373,13 @@ async function doSetup() {
   showStatus(st, 'loading', null, 'Credentials verified. Fetching library...');
   setProgress(true, 'Fetching VOD library...', 15);
 
-  // Step 2: Fetch full library from browser (user's IP — never blocked)
+  // Step 2: Fetch full library via proxy (proxy runs on VPS — never blocked)
   let vods = [], series = [];
   try {
     const base = server + '/player_api.php?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
     const [vodsRes, seriesRes] = await Promise.all([
-      fetchWithTimeout(base + '&action=get_vod_streams', 90000),
-      fetchWithTimeout(base + '&action=get_series', 90000),
+      xcFetch(proxyUrl, base + '&action=get_vod_streams', 90000),
+      xcFetch(proxyUrl, base + '&action=get_series', 90000),
     ]);
     setProgress(true, 'Parsing library...', 60);
     vods   = await vodsRes.json();
@@ -522,6 +526,16 @@ function cleanName(n) {
 
 function fetchWithTimeout(url, ms) {
   return fetch(url, { signal: AbortSignal.timeout(ms) });
+}
+
+// Route XC API calls through the proxy to avoid CORS + IP blocking
+function xcFetch(proxyUrl, xcUrl, ms) {
+  return fetch(proxyUrl + '/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: xcUrl }),
+    signal: AbortSignal.timeout(ms || 30000),
+  });
 }
 
 function esc(s) {
