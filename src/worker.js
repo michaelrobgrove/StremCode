@@ -35,7 +35,7 @@ export default {
 
     try {
       if (parts.length === 0) return serveUI();
-      if (parts[0] === 'health')  return json({ status: 'ok', version: '2.1.0' });
+      if (parts[0] === 'health')  return json({ status: 'ok', version: '2.1.1' });
       if (parts[0] === 'install') return handleInstall(request, url, env);
       if (parts[0] === 'index')   return handleIndexUpload(request, env);
       if (parts.length >= 2)      return handleAddon(parts[0], parts.slice(1), url, env, ctx);
