@@ -546,7 +546,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--serif);
-  font-size: 17px;
+  font-size: 21px;
   line-height: 1.6;
   overflow-x: hidden;
 }
@@ -614,7 +614,7 @@ nav {
 
 /* ── HERO ── */
 .hero {
-  max-width: 860px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 5rem 2.5rem 3rem;
   position: relative;
@@ -639,7 +639,7 @@ nav {
 }
 h1 {
   font-family: var(--fraktur);
-  font-size: clamp(3.5rem, 9vw, 6.5rem);
+  font-size: clamp(4rem, 10vw, 7.5rem);
   line-height: 0.9;
   margin-bottom: 1.5rem;
   position: relative;
@@ -664,7 +664,7 @@ h1 .line2 {
 
 /* ── TRUST SECTION ── */
 .trust-section {
-  max-width: 860px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 0 2.5rem 4rem;
 }
@@ -690,7 +690,7 @@ h1 .line2 {
 }
 .trust-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1px;
   background: var(--border);
   border: 1px solid var(--border);
@@ -761,7 +761,7 @@ h1 .line2 {
 
 /* ── DIVIDER ── */
 .divider {
-  max-width: 860px;
+  max-width: 1100px;
   margin: 0 auto 0;
   padding: 0 2.5rem;
   display: flex;
@@ -774,7 +774,7 @@ h1 .line2 {
 
 /* ── SETUP SECTION ── */
 .setup-section {
-  max-width: 860px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 0 2.5rem 6rem;
 }
