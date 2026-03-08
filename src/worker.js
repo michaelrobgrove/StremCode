@@ -19,7 +19,7 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
-const VERSION = '2.1.2g'; // display version (footer, health)
+const VERSION = '2.1.2h'; // display version (footer, health)
 const SEMVER  = '2.1.2';   // strict semver for Stremio manifests
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
@@ -427,16 +427,31 @@ async function forceRefresh() {
       server + '/get' + creds,
     ];
     for (var i = 0; i < candidates.length; i++) {
+      var url = candidates[i] + '&action=get_server_info';
+      // Try direct first (works for IP-locked providers that block datacenter IPs)
       try {
-        var r = await xcFetch(proxy, candidates[i] + '&action=get_server_info', 10000);
-        var d;
-        try { d = await r.json(); } catch(e) { continue; }
+        var ctrl = new AbortController();
+        var tid = setTimeout(function() { ctrl.abort(); }, 10000);
+        var r = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(tid);
+        var d; try { d = await r.json(); } catch(e2) { d = null; }
         if (d && d.user_info) {
-          console.log('[api] resolved via', candidates[i].split('?')[0]);
-          return { base: candidates[i], userInfo: d.user_info };
+          console.log('[api] resolved direct via', candidates[i].split('?')[0]);
+          return { base: candidates[i], userInfo: d.user_info, direct: true };
         }
       } catch(e) {
-        console.log('[api] probe failed for candidate', i, e.message);
+        console.log('[api] direct failed for', i, e.message, '- trying proxy');
+      }
+      // Fall back to proxy
+      try {
+        var r2 = await xcFetch(proxy, url, 10000);
+        var d2; try { d2 = await r2.json(); } catch(e2) { d2 = null; }
+        if (d2 && d2.user_info) {
+          console.log('[api] resolved via proxy for', candidates[i].split('?')[0]);
+          return { base: candidates[i], userInfo: d2.user_info, direct: false };
+        }
+      } catch(e) {
+        console.log('[api] proxy also failed for', i, e.message);
       }
     }
     return null;
@@ -1370,16 +1385,31 @@ var installData = null;
       server + '/get' + creds,
     ];
     for (var i = 0; i < candidates.length; i++) {
+      var url = candidates[i] + '&action=get_server_info';
+      // Try direct first (works for IP-locked providers that block datacenter IPs)
       try {
-        var r = await xcFetch(proxy, candidates[i] + '&action=get_server_info', 10000);
-        var d;
-        try { d = await r.json(); } catch(e) { continue; }
+        var ctrl = new AbortController();
+        var tid = setTimeout(function() { ctrl.abort(); }, 10000);
+        var r = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(tid);
+        var d; try { d = await r.json(); } catch(e2) { d = null; }
         if (d && d.user_info) {
-          console.log('[api] resolved via', candidates[i].split('?')[0]);
-          return { base: candidates[i], userInfo: d.user_info };
+          console.log('[api] resolved direct via', candidates[i].split('?')[0]);
+          return { base: candidates[i], userInfo: d.user_info, direct: true };
         }
       } catch(e) {
-        console.log('[api] probe failed for candidate', i, e.message);
+        console.log('[api] direct failed for', i, e.message, '- trying proxy');
+      }
+      // Fall back to proxy
+      try {
+        var r2 = await xcFetch(proxy, url, 10000);
+        var d2; try { d2 = await r2.json(); } catch(e2) { d2 = null; }
+        if (d2 && d2.user_info) {
+          console.log('[api] resolved via proxy for', candidates[i].split('?')[0]);
+          return { base: candidates[i], userInfo: d2.user_info, direct: false };
+        }
+      } catch(e) {
+        console.log('[api] proxy also failed for', i, e.message);
       }
     }
     return null;
@@ -1430,10 +1460,20 @@ async function doSetup() {
   // Strip any existing action param from base before appending new actions
   var baseNoAction = base.replace(/&action=[^&]*/g, '');
   var vods = [], series = [];
+  var useDirect = resolved.direct;
   try {
+    var fetchLib = function(action, ms) {
+      var url = baseNoAction + '&action=' + action;
+      if (useDirect) {
+        var ctrl = new AbortController();
+        var tid = setTimeout(function() { ctrl.abort(); }, ms);
+        return fetch(url, { signal: ctrl.signal }).then(function(r) { clearTimeout(tid); return r; });
+      }
+      return xcFetch(proxy, url, ms);
+    };
     var results = await Promise.all([
-      xcFetch(proxy, baseNoAction + '&action=get_vod_streams', 90000),
-      xcFetch(proxy, baseNoAction + '&action=get_series', 90000)
+      fetchLib('get_vod_streams', 90000),
+      fetchLib('get_series', 90000)
     ]);
     setProgress(true, 'Parsing...', 60);
     vods   = await results[0].json(); if (!Array.isArray(vods))   vods   = [];
