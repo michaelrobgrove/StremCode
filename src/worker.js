@@ -19,8 +19,8 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
-const VERSION = '2.1.2h'; // display version (footer, health)
-const SEMVER  = '2.1.2';   // strict semver for Stremio manifests
+const VERSION = '2.1.3a'; // display version (footer, health)
+const SEMVER  = '2.1.3';   // strict semver for Stremio manifests
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
 
@@ -1362,7 +1362,7 @@ footer {
 
 <footer>
   <div class="footer-brand">Low<span>Def</span>Pirate</div>
-  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2g</div>
+  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.3a</div>
   <div class="footer-links">
     <a href="https://lowdefpirate.link" target="_blank">lowdefpirate.link</a>
     <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank">donate</a>
