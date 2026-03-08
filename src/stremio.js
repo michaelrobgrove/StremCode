@@ -83,6 +83,7 @@ async function buildStreamDirect(client, type, id) {
 }
 
 async function buildStreamImdb(client, type, rawId, credHash, kv) {
+  rawId = decodeURIComponent(rawId);
   let imdbId = rawId, season = null, episode = null;
   if (type === 'series' && rawId.includes(':')) {
     const p = rawId.split(':'); imdbId = p[0]; season = parseInt(p[1]); episode = parseInt(p[2]);
@@ -105,13 +106,19 @@ async function buildStreamImdb(client, type, rawId, credHash, kv) {
 
   if (type === 'series' && season !== null) {
     const seriesId = seriesIndex.get(tmdbId);
-    if (!seriesId) { console.log('TMDB', tmdbId, 'not in series index'); return []; }
-    const info = await client.getSeriesInfo(seriesId).catch(() => null);
-    if (!info?.episodes) return [];
+    console.log('[series] tmdbId=' + tmdbId + ' seriesId=' + seriesId + ' season=' + season + ' ep=' + episode);
+    if (!seriesId) { console.log('[series] TMDB ' + tmdbId + ' not in series index'); return []; }
+    const info = await client.getSeriesInfo(seriesId).catch(e => { console.log('[series] getSeriesInfo failed:', e && e.message); return null; });
+    console.log('[series] info keys:', info ? Object.keys(info).join(',') : 'null');
+    if (!info?.episodes) { console.log('[series] no episodes in info'); return []; }
     const eps = info.episodes;
+    const seasonKeys = Object.keys(eps);
+    console.log('[series] season keys in response:', seasonKeys.join(','));
     const seasonEps = eps[String(season)] || eps[String(season).padStart(2, '0')] || [];
+    console.log('[series] seasonEps count:', Array.isArray(seasonEps) ? seasonEps.length : 'not array');
     if (!Array.isArray(seasonEps)) return [];
     const ep = seasonEps.find(e => parseInt(e.episode_num) === episode);
+    console.log('[series] episode found:', ep ? ep.id : 'NOT FOUND', 'looking for episode_num=' + episode);
     if (!ep) return [];
     const ext = ep.container_extension || 'mkv';
     return [{ url: client.seriesUrl(ep.id, ext), name: 'StremCodes', description: 'S' + String(season).padStart(2,'0') + 'E' + String(episode).padStart(2,'0') + ' · ' + ext.toUpperCase(), behaviorHints: { notWebReady: ext !== 'mp4', bingeGroup: 'stremcodes' } }];
