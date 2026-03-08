@@ -77,7 +77,7 @@ async function handleIndexUpload(request, env) {
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
 
-  const { hash, vod, series } = body || {};
+  const { hash, vod, series, proxyUrl } = body || {};
   if (!hash || typeof vod !== 'object' || typeof series !== 'object') {
     return json({ error: 'Missing hash, vod, or series' }, 400);
   }
@@ -88,6 +88,7 @@ async function handleIndexUpload(request, env) {
     builtAt: Date.now(),
     vod,
     series,
+    proxyUrl: proxyUrl || null,
   };
 
   try {
@@ -132,7 +133,16 @@ async function handleAddon(token, path, url, env, ctx) {
   catch { return json({ error: 'Invalid token' }, 401); }
 
   const { server, username, password } = creds;
-  const client = new XtreamClient(server, username, password);
+  // Load proxyUrl from KV index so all XC calls route through user's VPS
+  let proxyUrl = null;
+  if (env.INDEX_CACHE) {
+    try {
+      const hash = await credHash(server, username, password);
+      const idx = await env.INDEX_CACHE.get('idx:' + hash, { type: 'json' });
+      if (idx && idx.proxyUrl) proxyUrl = idx.proxyUrl;
+    } catch {}
+  }
+  const client = new XtreamClient(server, username, password, proxyUrl);
   const route = path[0];
 
   if (route === 'manifest.json') {
@@ -447,7 +457,7 @@ async function doSetup() {
     var r = await fetch('/index', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash: hash, vod: vodIndex, series: seriesIndex })
+      body: JSON.stringify({ hash: hash, vod: vodIndex, series: seriesIndex, proxyUrl: proxy })
     });
     var d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Index upload failed');
