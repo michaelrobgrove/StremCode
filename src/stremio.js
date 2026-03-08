@@ -13,7 +13,7 @@ export function buildDefaultManifest(origin) {
     version: '2.1.1',
     name: 'StremCodes',
     description: 'Connect your Xtream Codes IPTV subscription to Stremio. Streams movies and series directly from your own provider. Credentials are AES-256 encrypted and never stored. Configure with your provider credentials to get started.',
-    logo: 'https://i.imgur.com/8yHiPpR.png',
+    logo: 'https://vault.managedservers.click/api/public/dl/-3vBXLi2?inline=true',
     types: ['movie', 'series'],
     catalogs: [],
     resources: [],
@@ -35,7 +35,7 @@ export function buildManifest(origin, token) {
     version: '2.0.0',
     name: 'StremCodes',
     description: 'Your Xtream Codes IPTV library in Stremio — by LowDefPirate.',
-    logo: origin + '/logo.png',
+    logo: 'https://vault.managedservers.click/api/public/dl/-3vBXLi2?inline=true',
     background: origin + '/bg.png',
     types: ['movie', 'series'],
     catalogs: [
