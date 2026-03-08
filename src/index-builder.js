@@ -12,7 +12,7 @@ const PROXY_URL      = 'https://xcprox.managedservers.click';
 export async function getOrBuildIndex(client, hash, kv) {
   if (!kv) {
     console.log('[index] KV not configured');
-    return { vodIndex: new Map(), seriesIndex: new Map() };
+    return { vodIndex: new Map(), seriesIndex: new Map(), vodNames: {}, serNames: {} };
   }
 
   let cached = null;
@@ -26,6 +26,8 @@ export async function getOrBuildIndex(client, hash, kv) {
     const age = Date.now() - (cached.builtAt || 0);
     const vodIndex    = new Map(Object.entries(cached.vod    || {}));
     const seriesIndex = new Map(Object.entries(cached.series || {}));
+    const vodNames    = cached.vodNames || {};
+    const serNames    = cached.serNames || {};
     console.log('[index] KV hit — vod:', vodIndex.size, 'series:', seriesIndex.size, 'age:', Math.round(age/60000) + 'min');
 
     // If stale, trigger background refresh (don't await — return cached immediately)
@@ -36,7 +38,7 @@ export async function getOrBuildIndex(client, hash, kv) {
       );
     }
 
-    return { vodIndex, seriesIndex };
+    return { vodIndex, seriesIndex, vodNames, serNames };
   }
 
   // No index at all — try to build synchronously so this request gets streams
@@ -48,13 +50,27 @@ export async function getOrBuildIndex(client, hash, kv) {
       return {
         vodIndex:    new Map(Object.entries(fresh.vod    || {})),
         seriesIndex: new Map(Object.entries(fresh.series || {})),
+        vodNames:    fresh.vodNames || {},
+        serNames:    fresh.serNames || {},
       };
     }
   } catch (e) {
     console.log('[index] sync build failed:', e && e.message);
   }
 
-  return { vodIndex: new Map(), seriesIndex: new Map() };
+  return { vodIndex: new Map(), seriesIndex: new Map(), vodNames: {}, serNames: {} };
+}
+
+// Normalize a title to a fuzzy-matchable key: lowercase, strip punctuation/prefixes, keep words
+function fuzzyKey(raw) {
+  return (raw || '')
+    .toLowerCase()
+    // strip common provider prefixes like "EN |Disney+|", "4K-NF |", "EN - ", etc.
+    .replace(/^[a-z0-9_+\-]{1,6}\s*[\|:]\s*/i, '')
+    .replace(/^[a-z0-9_+\-]{1,6}\s*[\|:][^\|]+[\|:]\s*/i, '') // double prefix "EN |Disney+| "
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function refreshIndex(client, hash, proxyUrl, kv) {
@@ -103,12 +119,31 @@ async function refreshIndex(client, hash, proxyUrl, kv) {
     if (!tid || tid === '0') continue;
     const p = pri(s.name);
     if (!(tid in ser) || p < serP[tid]) {
-      ser[tid]  = String(s.series_id);
+      ser[tid]  = { id: String(s.series_id), name: s.name || '' };
       serP[tid] = p;
     }
   }
 
-  const payload = { builtAt: Date.now(), proxyUrl: proxy, vod, series: ser };
+  // Build name-keyed fuzzy indexes (all entries, not just best — we want every title)
+  const vodNames = {}, serNames = {};
+  for (const s of vods) {
+    const raw = (s.name || '').trim();
+    if (!raw || !s.stream_id) continue;
+    const key = fuzzyKey(raw);
+    if (!vodNames[key] || pri(s.name) < pri(vodNames[key].name)) {
+      vodNames[key] = { id: s.stream_id, ext: s.container_extension || 'mkv', name: raw };
+    }
+  }
+  for (const s of series) {
+    const raw = (s.name || '').trim();
+    if (!raw || !s.series_id) continue;
+    const key = fuzzyKey(raw);
+    if (!serNames[key] || pri(s.name) < pri(serNames[key].name)) {
+      serNames[key] = { id: String(s.series_id), name: raw };
+    }
+  }
+
+  const payload = { builtAt: Date.now(), proxyUrl: proxy, vod, series: ser, vodNames, serNames };
   await kv.put('idx:' + hash, JSON.stringify(payload), { expirationTtl: INDEX_KV_TTL_S });
   console.log('[index] refreshed — vod:', Object.keys(vod).length, 'series:', Object.keys(ser).length);
 }

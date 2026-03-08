@@ -10,9 +10,9 @@ const PAGE_SIZE = 100;
 export function buildDefaultManifest(origin) {
   return {
     id: 'community.stremcodes.ldp',
-    version: '2.1.1',
+    version: '2.1.1a',
     name: 'StremCodes',
-    description: 'Connect your Xtream Codes IPTV subscription to Stremio. Streams movies and series directly from your own provider. Credentials are AES-256 encrypted and never stored. Configure with your provider credentials to get started.',
+    description: 'Connect your Xtream Codes IPTV subscription to Stremio. v2.1.1a — Movies & series matched via TMDB with fuzzy title fallback. Credentials AES-256 encrypted, never stored.',
     logo: 'https://vault.managedservers.click/api/public/dl/-3vBXLi2?inline=true',
     types: ['movie', 'series'],
     catalogs: [],
@@ -32,7 +32,7 @@ export function buildDefaultManifest(origin) {
 export function buildManifest(origin, token) {
   return {
     id: 'community.stremcodes.ldp',
-    version: '2.0.0',
+    version: '2.1.1a',
     name: 'StremCodes',
     description: 'Your Xtream Codes IPTV library in Stremio — by LowDefPirate.',
     logo: 'https://vault.managedservers.click/api/public/dl/-3vBXLi2?inline=true',
@@ -112,6 +112,42 @@ async function buildStreamDirect(client, type, id) {
   return [];
 }
 
+// Strip provider prefixes like "EN |Disney+| ", "4K-NF | ", "EN - " then normalize
+function normTitle(raw) {
+  return (raw || '')
+    .toLowerCase()
+    .replace(/^[a-z0-9_+\-]{1,6}\s*[|:]\s*/i, '')
+    .replace(/^[a-z0-9_+\-]{1,6}\s*[|][^|]+[|]\s*/i, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Fuzzy match: every word in needle must appear somewhere in haystack
+function fuzzyMatch(needle, haystack) {
+  const n = normTitle(needle);
+  const h = normTitle(haystack);
+  if (!n || !h) return false;
+  const words = n.split(' ').filter(w => w.length > 1);
+  return words.every(w => h.includes(w));
+}
+
+// Find best fuzzy match in a name->entry map, returns entry or null
+function fuzzyFind(title, nameMap) {
+  const norm = normTitle(title);
+  if (!norm) return null;
+  const words = norm.split(' ').filter(w => w.length > 1);
+  let best = null, bestScore = 0;
+  for (const [key, entry] of Object.entries(nameMap)) {
+    if (words.every(w => key.includes(w))) {
+      // Score by how close the lengths are (prefer tighter matches)
+      const score = norm.length / (key.length + 1);
+      if (score > bestScore) { best = entry; bestScore = score; }
+    }
+  }
+  return best;
+}
+
 async function buildStreamImdb(client, type, rawId, credHash, kv) {
   rawId = decodeURIComponent(rawId);
   let imdbId = rawId, season = null, episode = null;
@@ -120,24 +156,38 @@ async function buildStreamImdb(client, type, rawId, credHash, kv) {
   }
 
   // Parallel: Cinemeta + index build
-  const [resolved, { vodIndex, seriesIndex }] = await Promise.all([
+  const [resolved, { vodIndex, seriesIndex, vodNames, serNames }] = await Promise.all([
     resolveImdb(imdbId, type, kv),
     getOrBuildIndex(client, credHash, kv),
   ]);
 
   const tmdbId = resolved && resolved.tmdbId;
-  if (!tmdbId) { console.log('No TMDB id for', imdbId); return []; }
+  const resolvedTitle = resolved && (resolved.name || resolved.title);
 
   if (type === 'movie') {
-    const entry = vodIndex.get(tmdbId);
-    if (!entry) { console.log('TMDB', tmdbId, 'not in VOD index'); return []; }
+    // 1. Try TMDB match
+    let entry = tmdbId ? vodIndex.get(tmdbId) : null;
+    // 2. Fuzzy fallback using resolved title
+    if (!entry && resolvedTitle) {
+      console.log('[vod] TMDB miss, trying fuzzy for:', resolvedTitle);
+      entry = fuzzyFind(resolvedTitle, vodNames);
+      if (entry) console.log('[vod] fuzzy matched:', entry.name);
+    }
+    if (!entry) { console.log('[vod] no match for', resolvedTitle || imdbId); return []; }
     return [{ url: client.vodUrl(entry.id, entry.ext), name: 'StremCodes', description: (entry.name || 'XC') + ' · ' + entry.ext.toUpperCase(), behaviorHints: { notWebReady: entry.ext !== 'mp4', bingeGroup: 'stremcodes' } }];
   }
 
   if (type === 'series' && season !== null) {
-    const seriesId = seriesIndex.get(tmdbId);
+    let seriesEntry = tmdbId ? seriesIndex.get(tmdbId) : null;
+    // Fuzzy fallback for series
+    if (!seriesEntry && resolvedTitle) {
+      console.log('[series] TMDB miss, trying fuzzy for:', resolvedTitle);
+      const fuzzyResult = fuzzyFind(resolvedTitle, serNames);
+      if (fuzzyResult) { seriesEntry = fuzzyResult; console.log('[series] fuzzy matched:', fuzzyResult.name); }
+    }
+    const seriesId = seriesEntry && (seriesEntry.id || seriesEntry);
     console.log('[series] tmdbId=' + tmdbId + ' seriesId=' + seriesId + ' season=' + season + ' ep=' + episode);
-    if (!seriesId) { console.log('[series] TMDB ' + tmdbId + ' not in series index'); return []; }
+    if (!seriesId) { console.log('[series] no match for', resolvedTitle || imdbId); return []; }
     const info = await client.getSeriesInfo(seriesId).catch(e => { console.log('[series] getSeriesInfo failed:', e && e.message); return null; });
     console.log('[series] info keys:', info ? Object.keys(info).join(',') : 'null');
     if (!info?.episodes) { console.log('[series] no episodes in info'); return []; }

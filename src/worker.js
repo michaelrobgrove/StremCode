@@ -1,5 +1,5 @@
 /**
- * StremCodes Worker v2.1 — LowDefPirate
+ * StremCodes Worker v2.1.1a — LowDefPirate
  *
  * Key change from v2.0:
  * Index building moved to CLIENT SIDE (browser) to avoid CF IP blocks.
@@ -19,6 +19,8 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
+const VERSION = '2.1.1a';
+
 const PROXY_URL = 'https://xcprox.managedservers.click';
 
 const CORS = {
@@ -37,7 +39,7 @@ export default {
 
     try {
       if (parts.length === 0) return serveUI();
-      if (parts[0] === 'health')  return json({ status: 'ok', version: '2.1.1' });
+      if (parts[0] === 'health')  return json({ status: 'ok', version: VERSION });
       if (parts[0] === 'install') return handleInstall(request, url, env);
       if (parts[0] === 'index')     return handleIndexUpload(request, env);
       if (parts[0] === 'manifest.json') return json(buildDefaultManifest(url.origin));
@@ -1272,6 +1274,7 @@ footer {
 
 <footer>
   <div class="footer-brand">Low<span>Def</span>Pirate</div>
+  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.1a</div>
   <div class="footer-links">
     <a href="https://lowdefpirate.link" target="_blank">lowdefpirate.link</a>
     <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank">donate</a>
