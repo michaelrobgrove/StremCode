@@ -19,7 +19,7 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
-const VERSION = '2.1.2c'; // display version (footer, health)
+const VERSION = '2.1.2e'; // display version (footer, health)
 const SEMVER  = '2.1.2';   // strict semver for Stremio manifests
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
@@ -86,7 +86,7 @@ async function handleIndexUpload(request, env) {
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
 
-  const { hash, vod, series, proxyUrl } = body || {};
+  const { hash, vod, series, proxyUrl, apiBase } = body || {};
   if (!hash || typeof vod !== 'object' || typeof series !== 'object') {
     return json({ error: 'Missing hash, vod, or series' }, 400);
   }
@@ -98,6 +98,7 @@ async function handleIndexUpload(request, env) {
     vod,
     series,
     proxyUrl: proxyUrl || null,
+    apiBase:  apiBase  || null,
   };
 
   try {
@@ -416,6 +417,31 @@ async function forceRefresh() {
   }
 }
 
+
+  // Try player_api.php -> get.php -> get in order, return first that gives valid user_info
+  async function resolveApiBase(server, username, password, proxy) {
+    var creds = '?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+    var candidates = [
+      server + '/player_api.php' + creds,
+      server + '/get.php' + creds,
+      server + '/get' + creds,
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var r = await xcFetch(proxy, candidates[i] + '&action=get_server_info', 10000);
+        var d;
+        try { d = await r.json(); } catch(e) { continue; }
+        if (d && d.user_info) {
+          console.log('[api] resolved via', candidates[i].split('?')[0]);
+          return { base: candidates[i], userInfo: d.user_info };
+        }
+      } catch(e) {
+        console.log('[api] probe failed for candidate', i, e.message);
+      }
+    }
+    return null;
+  }
+
 async function updateCreds() {
   var server = document.getElementById('new-server').value.trim();
   while (server.endsWith('/')) server = server.slice(0, -1);
@@ -489,7 +515,7 @@ async function updateCreds() {
     var r = await fetch('/index', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash: hash, vod: vodIndex, series: seriesIndex, proxyUrl: PROXY })
+      body: JSON.stringify({ hash: hash, vod: vodIndex, series: seriesIndex, proxyUrl: PROXY, apiBase: base })
     });
     var d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Index save failed');
@@ -1162,8 +1188,12 @@ footer {
     <div class="form-panel">
       <div class="field">
         <label>Server URL</label>
-        <input id="inp-server" type="url" placeholder="http://your-provider.com:8080"/>
-        <div class="field-hint">Full URL — no trailing slash</div>
+        <div style="display:flex;gap:0.5rem;align-items:stretch">
+          <input id="inp-server" type="url" placeholder="http://your-provider.com:8080" style="flex:1" oninput="clearTestResult()"/>
+          <button onclick="testServer()" id="test-btn" style="background:transparent;border:1px solid rgba(126,255,92,0.3);color:var(--lime);font-family:var(--mono);font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;padding:0 0.9rem;border-radius:2px;cursor:pointer;white-space:nowrap;transition:border-color 0.15s" onmouseover="this.style.borderColor='var(--lime)'" onmouseout="this.style.borderColor='rgba(126,255,92,0.3)'">Test</button>
+        </div>
+        <div class="field-hint">Full URL — no trailing slash. Use http:// not https:// unless your provider requires it.</div>
+        <div id="test-result" style="margin-top:0.5rem;font-family:var(--mono);font-size:0.68rem;line-height:1.5;display:none"></div>
       </div>
       <div class="field">
         <label>Username</label>
@@ -1317,7 +1347,7 @@ footer {
 
 <footer>
   <div class="footer-brand">Low<span>Def</span>Pirate</div>
-  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2c</div>
+  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2e</div>
   <div class="footer-links">
     <a href="https://lowdefpirate.link" target="_blank">lowdefpirate.link</a>
     <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank">donate</a>
@@ -1330,7 +1360,128 @@ footer {
 <script>
 var installData = null;
 
-async function doSetup() {
+
+  // Try player_api.php -> get.php -> get in order, return first that gives valid user_info
+  async function resolveApiBase(server, username, password, proxy) {
+    var creds = '?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+    var candidates = [
+      server + '/player_api.php' + creds,
+      server + '/get.php' + creds,
+      server + '/get' + creds,
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var r = await xcFetch(proxy, candidates[i] + '&action=get_server_info', 10000);
+        var d;
+        try { d = await r.json(); } catch(e) { continue; }
+        if (d && d.user_info) {
+          console.log('[api] resolved via', candidates[i].split('?')[0]);
+          return { base: candidates[i], userInfo: d.user_info };
+        }
+      } catch(e) {
+        console.log('[api] probe failed for candidate', i, e.message);
+      }
+    }
+    return null;
+  }
+
+function clearTestResult() {
+    var r = document.getElementById('test-result');
+    if (r) { r.style.display = 'none'; r.innerHTML = ''; }
+  }
+
+  async function testServer() {
+    var raw = document.getElementById('inp-server').value.trim();
+    var result = document.getElementById('test-result');
+    var btn = document.getElementById('test-btn');
+    if (!raw) { showTestResult('Enter a server URL first', 'warn'); return; }
+
+    // Auto-fix common mistakes
+    var server = raw;
+    while (server.endsWith('/')) server = server.slice(0, -1);
+
+    // Detect port-as-path mistake: http://host/80 or http://host/8080
+    var portAsPath = server.match(/^(https?:\/\/[^/]+)\/([0-9]{2,5})$/);
+    if (portAsPath) {
+      var fixed = portAsPath[1] + ':' + portAsPath[2];
+      showTestResult('⚠ Looks like port is in the wrong place. Did you mean: <strong>' + fixed + '</strong>?<br>Fix your URL and try again.', 'warn');
+      return;
+    }
+
+    if (!server.startsWith('http')) {
+      showTestResult('⚠ URL must start with http:// or https://', 'warn'); return;
+    }
+
+    btn.disabled = true; btn.textContent = '...';
+    showTestResult('Probing server...', 'loading');
+
+    var proxy = 'https://xcprox.managedservers.click';
+    var creds = '?username=test&password=test';
+    var candidates = [
+      { url: server + '/player_api.php' + creds + '&action=get_server_info', label: '/player_api.php' },
+      { url: server + '/get.php' + creds + '&action=get_server_info', label: '/get.php' },
+      { url: server + '/get' + creds + '&action=get_server_info', label: '/get' },
+    ];
+
+    var reachable = false;
+    var reachablePath = null;
+    var serverInfo = null;
+
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var r = await xcFetch(proxy, candidates[i].url, 8000);
+        var d;
+        try { d = await r.json(); } catch(e) { continue; }
+        if (d && (d.server_info || d.user_info)) {
+          reachable = true;
+          reachablePath = candidates[i].label;
+          serverInfo = d.server_info || null;
+          break;
+        }
+      } catch(e) { /* try next */ }
+    }
+
+    btn.disabled = false; btn.textContent = 'Test';
+
+    if (!reachable) {
+      showTestResult(
+        '✗ Could not reach server at <strong>' + server + '</strong><br>' +
+        'Tried: /player_api.php, /get.php, /get — none responded.<br>' +
+        '<span style="color:var(--muted)">Check: correct URL? Port included? http not https?</span>',
+        'fail'
+      );
+      return;
+    }
+
+    var info = '';
+    if (serverInfo) {
+      var proto = serverInfo.server_protocol || 'http';
+      var port  = serverInfo.port || '80';
+      var httpsPort = serverInfo.https_port || '';
+      info += '<br><span style="color:var(--muted)">Protocol: ' + proto + ' · Port: ' + port;
+      if (httpsPort) info += ' · HTTPS port: ' + httpsPort;
+      info += '</span>';
+    }
+
+    showTestResult(
+      '✓ Server is reachable via <strong>' + reachablePath + '</strong>' + info + '<br>' +
+      '<span style="color:var(--muted)">Enter your username and password and hit Set Sail.</span>',
+      'ok'
+    );
+
+    // Update the server field with cleaned URL if it changed
+    if (server !== raw) document.getElementById('inp-server').value = server;
+  }
+
+  function showTestResult(msg, type) {
+    var el = document.getElementById('test-result');
+    var colors = { ok: 'var(--lime)', fail: '#f87171', warn: '#fbbf24', loading: 'var(--muted2)' };
+    el.style.display = 'block';
+    el.style.color = colors[type] || 'var(--muted2)';
+    el.innerHTML = msg;
+  }
+
+  async function doSetup() {
   var server = document.getElementById('inp-server').value.trim();
   while (server.endsWith('/')) server = server.slice(0, -1);
   var username = document.getElementById('inp-user').value.trim();
@@ -1346,27 +1497,21 @@ async function doSetup() {
   showStatus('loading', 'Validating credentials...');
   setProgress(true, 'Validating credentials...', 5);
 
-  var base = server + '/player_api.php?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
-
+  var creds = '?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+  var base;
   var acct;
   try {
-    var r = await xcFetch(proxy, base + '&action=get_server_info', 12000);
-    var d;
-    try { d = await r.json(); } catch(je) {
-      throw new Error('Server returned an invalid response — check your Server URL format (no trailing slash)');
+    showStatus('loading', 'Detecting API endpoint...');
+    var resolved = await resolveApiBase(server, username, password, proxy);
+    if (!resolved) {
+      throw new Error('Could not connect to server — tried /player_api.php, /get.php and /get. Check your Server URL and credentials.');
     }
-    if (!d) throw new Error('Empty response from server — is your Server URL correct?');
-    if (d.user_info && d.user_info.auth == 0) throw new Error('Wrong username or password');
-    if (!d.user_info) {
-      // Some providers return error messages in different fields
-      const msg = d.message || d.error || d.info || '';
-      if (msg) throw new Error('Provider error: ' + msg);
-      throw new Error('Server did not return account info — double-check your Server URL, username and password');
-    }
-    acct = d.user_info;
+    if (resolved.userInfo.auth == 0) throw new Error('Wrong username or password');
+    base = resolved.base;
+    acct = resolved.userInfo;
+    console.log('Using API base:', base.split('?')[0]);
   } catch(e) {
     const friendly = e.message || 'Could not reach server';
-    // Add hint if it looks like a network/proxy issue vs credentials
     const hint = (friendly.includes('fetch') || friendly.includes('network') || friendly.includes('timeout'))
       ? friendly + ' (the proxy may not be able to reach your provider)'
       : friendly;
@@ -1378,11 +1523,13 @@ async function doSetup() {
   showStatus('loading', 'Fetching library...');
   setProgress(true, 'Fetching VOD + Series...', 15);
 
+  // Strip any existing action param from base before appending new actions
+  var baseNoAction = base.replace(/&action=[^&]*/g, '');
   var vods = [], series = [];
   try {
     var results = await Promise.all([
-      xcFetch(proxy, base + '&action=get_vod_streams', 90000),
-      xcFetch(proxy, base + '&action=get_series', 90000)
+      xcFetch(proxy, baseNoAction + '&action=get_vod_streams', 90000),
+      xcFetch(proxy, baseNoAction + '&action=get_series', 90000)
     ]);
     setProgress(true, 'Parsing...', 60);
     vods   = await results[0].json(); if (!Array.isArray(vods))   vods   = [];
@@ -1435,7 +1582,7 @@ async function doSetup() {
     var r = await fetch('/index', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash: hash, vod: vodIndex, series: seriesIndex, proxyUrl: proxy })
+      body: JSON.stringify({ hash: hash, vod: vodIndex, series: seriesIndex, proxyUrl: proxy, apiBase: base })
     });
     var d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Index upload failed');

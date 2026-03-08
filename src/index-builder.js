@@ -33,7 +33,11 @@ export async function getOrBuildIndex(client, hash, kv) {
     // If stale, trigger background refresh (don't await — return cached immediately)
     if (age > INDEX_TTL_MS) {
       console.log('[index] stale, triggering background refresh');
-      refreshIndex(client, hash, cached.proxyUrl || PROXY_URL, kv).catch(e =>
+      // Pass stored apiBase so refresh doesn't need to re-probe
+      const clientWithBase = cached.apiBase
+        ? Object.assign({}, client, { apiBase: cached.apiBase })
+        : client;
+      refreshIndex(clientWithBase, hash, cached.proxyUrl || PROXY_URL, kv).catch(e =>
         console.log('[index] background refresh error:', e && e.message)
       );
     }
@@ -73,15 +77,50 @@ function fuzzyKey(raw) {
     .trim();
 }
 
+// Probe player_api.php -> get.php -> get, return first working base URL
+async function resolveApiBase(server, username, password, proxy) {
+  const creds = '?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+  const candidates = [
+    server + '/player_api.php' + creds,
+    server + '/get.php' + creds,
+    server + '/get' + creds,
+  ];
+  for (let i = 0; i < candidates.length; i++) {
+    try {
+      const r = await xcFetch(proxy, candidates[i] + '&action=get_server_info', 10000);
+      const text = await r.text();
+      try {
+        const d = JSON.parse(text);
+        if (d && d.user_info) {
+          console.log('[api] resolved via', candidates[i].split('?')[0]);
+          return candidates[i];
+        }
+      } catch(e) { /* not JSON, try next */ }
+    } catch(e) {
+      console.log('[api] probe failed for candidate', i, ':', e.message);
+    }
+  }
+  return null;
+}
+
 async function refreshIndex(client, hash, proxyUrl, kv) {
   const proxy = proxyUrl || PROXY_URL;
   const server   = client.server;
   const username = client.username;
   const password = client.password;
-  const base = server + '/player_api.php?username=' + encodeURIComponent(username) +
-               '&password=' + encodeURIComponent(password);
 
-  console.log('[index] fetching VOD + series via proxy:', proxy);
+  // Use previously detected apiBase, or probe fallback chain
+  let apiBase = client.apiBase;
+  if (!apiBase) {
+    apiBase = await resolveApiBase(server, username, password, proxy);
+    if (!apiBase) {
+      console.log('[index] could not resolve API base — skipping refresh');
+      return;
+    }
+  }
+  const base = apiBase.replace(/&action=[^&]*/g, '');
+
+  console.log('[index] fetching VOD + series via proxy:', proxy, 'base:', base.split('?')[0]);
 
   const [vodsRaw, seriesRaw] = await Promise.all([
     xcFetch(proxy, base + '&action=get_vod_streams', 90000),
@@ -143,7 +182,7 @@ async function refreshIndex(client, hash, proxyUrl, kv) {
     }
   }
 
-  const payload = { builtAt: Date.now(), proxyUrl: proxy, vod, series: ser, vodNames, serNames };
+  const payload = { builtAt: Date.now(), proxyUrl: proxy, apiBase: client.apiBase || null, vod, series: ser, vodNames, serNames };
   await kv.put('idx:' + hash, JSON.stringify(payload), { expirationTtl: INDEX_KV_TTL_S });
   console.log('[index] refreshed —',
     'vod TMDB:', Object.keys(vod).length, '/ vod fuzzy:', Object.keys(vodNames).length,
