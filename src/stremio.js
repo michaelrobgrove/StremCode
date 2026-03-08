@@ -7,6 +7,24 @@ import { getOrBuildIndex } from './index-builder.js';
 
 const PAGE_SIZE = 100;
 
+export function buildDefaultManifest(origin) {
+  return {
+    id: 'community.stremcodes.ldp',
+    version: '2.1.1',
+    name: 'StremCodes',
+    description: 'Connect your Xtream Codes IPTV subscription to Stremio. Streams movies and series directly from your own provider. Credentials are AES-256 encrypted and never stored. Configure with your provider credentials to get started.',
+    logo: 'https://i.imgur.com/8yHiPpR.png',
+    types: ['movie', 'series'],
+    catalogs: [],
+    resources: [],
+    behaviorHints: {
+      configurable: true,
+      configurationRequired: true,
+      configurationURL: origin + '/configure',
+    },
+  };
+}
+
 export function buildManifest(origin, token) {
   return {
     id: 'community.stremcodes.ldp',

@@ -17,7 +17,7 @@
 
 import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
-import { buildManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
+import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
 
@@ -40,6 +40,7 @@ export default {
       if (parts[0] === 'health')  return json({ status: 'ok', version: '2.1.1' });
       if (parts[0] === 'install') return handleInstall(request, url, env);
       if (parts[0] === 'index')     return handleIndexUpload(request, env);
+      if (parts[0] === 'manifest.json') return json(buildDefaultManifest(url.origin));
       if (parts[0] === 'configure') return serveConfigure();
       if (parts[0] === 'refresh')   return handleRefresh(request, env);
       if (parts[0] === 'debug')   return handleDebug(parts[1], env);

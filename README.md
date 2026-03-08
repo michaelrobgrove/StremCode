@@ -1,71 +1,142 @@
-# StremCodes v2.0 — LowDefPirate
+# StremCodes
 
-Stremio addon for Xtream Codes IPTV. Deployed as a **Cloudflare Worker** (not Pages).
+**Connect your Xtream Codes IPTV subscription to Stremio.**  
+Built by [LowDefPirate](https://lowdefpirate.link) · Hosted on Cloudflare Workers
 
-## Deploy in 5 minutes
+---
 
-### 1. Install Wrangler
-```bash
-npm install -g wrangler
-wrangler login
+## What it does
+
+StremCodes bridges your XC/IPTV provider with Stremio. It matches your provider's VOD and series library against TMDB IDs, so your streams appear automatically on any Stremio title page — no manual browsing required.
+
+- 🎬 **Movies** — matched via TMDB, appear on any movie page in Stremio  
+- 📺 **Series** — matched via TMDB, episode-level resolution via your provider  
+- 🔄 **Auto-refresh** — library index rebuilds every 12 hours automatically  
+- 🔐 **Privacy-first** — credentials AES-256-GCM encrypted in addon URL, never stored  
+- ☠ **IP-safe** — all XC API calls route through VPS proxy, never from Cloudflare IPs  
+
+---
+
+## Architecture
+
+```
+Browser (setup)
+  ├─ Validates credentials → XC server (user's device IP)
+  ├─ Fetches full library → XC server (user's device IP)
+  ├─ Builds TMDB index in browser
+  ├─ POSTs index to CF Worker → stored in KV (hash → stream IDs only, no PII)
+  └─ Receives encrypted addon URL
+
+Stremio (stream request)
+  ├─ /stream/movie/tt1234567.json
+  │    ├─ Cinemeta: IMDB → TMDB id
+  │    ├─ KV lookup: TMDB id → stream id
+  │    └─ Returns direct stream URL to provider
+  └─ /stream/series/tt1234567:1:1.json
+       ├─ Cinemeta: IMDB → TMDB id
+       ├─ KV lookup: TMDB id → series id
+       ├─ getSeriesInfo via VPS proxy → episode id
+       └─ Returns direct stream URL to provider
 ```
 
-### 2. Create KV namespace
-```bash
-wrangler kv:namespace create "INDEX_CACHE"
+**Security:** Credentials are AES-256-GCM encrypted inside the addon URL token. KV only stores `sha256(server+user+pass)` → stream IDs. No usernames, no server URLs, no PII ever stored.
+
+---
+
+## Project structure
+
 ```
-Copy the `id` from the output and paste it into `wrangler.toml`:
+stremcodes-worker/
+├── src/
+│   ├── worker.js          — CF Worker entry, routing, UI pages
+│   ├── stremio.js         — Stremio protocol (manifest, catalog, meta, stream)
+│   ├── xtream.js          — XC API client (proxied through VPS)
+│   ├── cinemeta.js        — IMDB → TMDB resolver
+│   ├── index-builder.js   — KV index reader + 12h auto-refresh
+│   └── crypto.js          — AES-256-GCM + credHash
+├── .github/workflows/
+│   └── deploy.yml         — Auto-deploy on push to main
+├── wrangler.toml
+└── package.json
+```
+
+---
+
+## Deployment
+
+### Prerequisites
+- Cloudflare account (Workers + KV)
+- GitHub repo
+- VPS running xc-proxy (see xc-proxy/ directory)
+
+### Steps
+
+**1. Create KV namespace**
+```bash
+npx wrangler kv namespace create INDEX_CACHE
+```
+Add the returned ID to `wrangler.toml`:
 ```toml
 [[kv_namespaces]]
 binding = "INDEX_CACHE"
-id = "paste-your-id-here"
+id = "PASTE_ID_HERE"
 ```
 
-### 3. Set encryption secret
+**2. Set encryption secret**
 ```bash
-wrangler secret put ENCRYPTION_SECRET
-# Enter any long random string when prompted
+npx wrangler secret put ENCRYPTION_SECRET
 ```
 
-### 4. Deploy
+**3. GitHub Actions secrets**  
+Settings → Secrets → Actions:
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+**4. Update proxy URL**  
+In `src/worker.js` and `src/index-builder.js`, set `PROXY_URL` to your VPS address.
+
+**5. Push to deploy**
 ```bash
-npm install
-npm run deploy
+git push origin main
 ```
-
-Your addon is live at: `https://stremcodes.<your-subdomain>.workers.dev`
 
 ---
 
-## How it works
+## xc-proxy
 
-**Security model:**
-- Credentials are AES-256-GCM encrypted inside the Stremio addon URL — never stored anywhere
-- KV stores only: `sha256(server+user+pass)` → `{tmdbId: streamId}` index
-- The hash reveals nothing. No server URLs, no usernames, no passwords ever touch KV.
+Tiny Node.js CORS proxy — routes XC API calls through your VPS to bypass provider IP blocks.
 
-**Stream matching:**
-1. Stremio sends IMDB id (e.g. `tt1234567`)
-2. Worker looks up IMDB→TMDB via Cinemeta (cached in KV 30 days)
-3. Worker looks up TMDB→XC stream via the user's index (cached in KV 6 hours)
-4. Returns direct stream URL
-
-**First stream per session:** 10-30 seconds (index builds from your full XC library)
-**All subsequent streams:** ~300ms (KV lookup)
-**Index auto-rebuilds:** every 6 hours to catch daily library changes
-
-**Scales to:**
-- Unlimited users (each has their own anonymous KV entry)
-- 200k+ stream libraries
-- Multiple XC servers per user if needed
+```bash
+cd xc-proxy
+docker compose up -d
+ufw allow 6767
+```
 
 ---
 
-## KV storage estimate
+## API endpoints
 
-Per user:
-- `idx:<hash>`: ~500KB-2MB depending on library size (10k-200k streams)
-- `cm:<imdbId>`: ~200 bytes per unique title looked up
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Setup page |
+| `GET` | `/manifest.json` | Default manifest (addon directory) |
+| `GET` | `/configure` | Manage / update credentials |
+| `POST` | `/install` | Encrypt creds → return token |
+| `POST` | `/index` | Store TMDB index from browser |
+| `POST` | `/refresh` | Clear index → triggers rebuild |
+| `GET` | `/:token/manifest.json` | User manifest |
+| `GET` | `/:token/catalog/...` | Catalog |
+| `GET` | `/:token/meta/...` | Metadata |
+| `GET` | `/:token/stream/...` | Stream resolution |
 
-KV free tier: 1GB storage, 100k reads/day — sufficient for hundreds of users.
-KV paid tier: $0.50/GB/month — trivial cost even at thousands of users.
+---
+
+## Support
+
+- ☕ [Buy Me a Coffee](https://buymeacoffee.com/yourdsgnpro)  
+- 💵 [Cash App](https://cash.app/$Strong8Stream)  
+- 🌐 [lowdefpirate.link](https://lowdefpirate.link)
+
+---
+
+MIT License
