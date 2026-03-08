@@ -10,9 +10,9 @@ const PAGE_SIZE = 100;
 export function buildDefaultManifest(origin) {
   return {
     id: 'community.stremcodes.ldp',
-    version: '2.1.1',
+    version: '2.1.2',
     name: 'StremCodes',
-    description: 'Connect your Xtream Codes IPTV subscription to Stremio. v2.1.1a — Movies & series matched via TMDB with fuzzy title fallback. Credentials AES-256 encrypted, never stored.',
+    description: 'Connect your Xtream Codes IPTV subscription to Stremio. v2.1.2a — Movies & series matched via TMDB with fuzzy title fallback. Credentials AES-256 encrypted, never stored.',
     logo: 'https://vault.managedservers.click/api/public/dl/-3vBXLi2?inline=true',
     types: ['movie', 'series'],
     catalogs: [],
@@ -32,7 +32,7 @@ export function buildDefaultManifest(origin) {
 export function buildManifest(origin, token) {
   return {
     id: 'community.stremcodes.ldp',
-    version: '2.1.1',
+    version: '2.1.2',
     name: 'StremCodes',
     description: 'Your Xtream Codes IPTV library in Stremio — by LowDefPirate.',
     logo: 'https://vault.managedservers.click/api/public/dl/-3vBXLi2?inline=true',

@@ -1,6 +1,6 @@
 {
   "name": "stremcodes",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Stremio addon for Xtream Codes IPTV - LowDefPirate edition",
   "private": true,
   "scripts": {
