@@ -237,9 +237,9 @@ const CONFIGURE_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>StremCodes — Manage Addon</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Pirata+One&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
 <style>
-:root{--bg:#1a1a1a;--bg2:#232323;--surface:#323232;--border:#3e3e3e;--border2:#505050;--purple:#8600a1;--purple2:#b000d4;--purple3:#d060f0;--lime:#7eff5c;--lime2:#a0ff85;--lime-dim:rgba(126,255,92,0.08);--pur-dim:rgba(134,0,161,0.15);--text:#e8e0d0;--muted:#7a7060;--muted2:#a09080;--red:#cc3333;--gold:#c8a84b;--mono:'Share Tech Mono',monospace;--serif:'Crimson Pro',serif;--fraktur:'UnifrakturMaguntia',cursive}
+:root{--bg:#1a1a1a;--bg2:#232323;--surface:#323232;--border:#3e3e3e;--border2:#505050;--purple:#8600a1;--purple2:#b000d4;--purple3:#d060f0;--lime:#7eff5c;--lime2:#a0ff85;--lime-dim:rgba(126,255,92,0.08);--pur-dim:rgba(134,0,161,0.15);--text:#e8e0d0;--muted:#7a7060;--muted2:#a09080;--red:#cc3333;--gold:#c8a84b;--mono:'Share Tech Mono',monospace;--serif:'Crimson Pro',serif;--fraktur:'Pirata One',cursive}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--serif);font-size:17px;overflow-x:hidden}
 body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at center,transparent 50%,rgba(0,0,0,0.5) 100%);pointer-events:none;z-index:0}
@@ -512,7 +512,7 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>StremCodes — LowDefPirate</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Pirata+One&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
 <style>
 :root {
   --bg:      #1a1a1a;
@@ -535,7 +535,7 @@ const HTML = `<!DOCTYPE html>
   --gold:    #c8a84b;
   --mono: 'Share Tech Mono', monospace;
   --serif: 'Crimson Pro', serif;
-  --fraktur: 'UnifrakturMaguntia', cursive;
+  --fraktur: 'Pirata One', cursive;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -648,7 +648,7 @@ h1 .line1 { color: var(--text); display: block; }
 h1 .line2 {
   color: transparent;
   -webkit-text-stroke: 1.5px var(--purple2);
-  display: block;
+  display: inline;
   filter: drop-shadow(0 0 20px rgba(134,0,161,0.4));
 }
 .hero-sub {
@@ -1089,8 +1089,7 @@ footer {
 <section class="hero">
   <div class="hero-eyebrow">Xtream Codes · Stremio Integration</div>
   <h1>
-    <span class="line1">Strem</span>
-    <span class="line2">Codes</span>
+    <span class="line1">Strem<span class="line2">Codes</span></span>
   </h1>
   <p class="hero-sub">
     Sail your IPTV library into Stremio. <strong>Your credentials stay yours.</strong>
@@ -1098,6 +1097,86 @@ footer {
     No middleman sitting between you and your streams.
   </p>
 </section>
+
+<!-- SETUP -->
+<section class="setup-section">
+  <div class="setup-label">Connect your provider</div>
+
+  <div class="setup-grid">
+    <div class="form-panel">
+      <div class="field">
+        <label>Server URL</label>
+        <input id="inp-server" type="url" placeholder="http://your-provider.com:8080"/>
+        <div class="field-hint">Full URL — no trailing slash</div>
+      </div>
+      <div class="field">
+        <label>Username</label>
+        <input id="inp-user" type="text" placeholder="username" autocomplete="off"/>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="inp-pass" type="password" placeholder="password" autocomplete="off"/>
+      </div>
+      <button class="btn-setup" id="setup-btn" onclick="doSetup()">⚓ &nbsp;Set Sail</button>
+      <div class="status-box" id="status-box"></div>
+      <div class="prog-wrap" id="prog-wrap">
+        <div class="prog-meta"><span id="prog-text">Working...</span><span id="prog-pct">0%</span></div>
+        <div class="prog-bar"><div class="prog-fill" id="prog-fill"></div></div>
+      </div>
+    </div>
+
+    <div class="info-panel">
+      <div class="info-panel-title">What happens when you connect</div>
+      <div class="steps">
+        <div class="step"><div class="step-n">1</div><div class="step-text">Your credentials are <strong>validated directly</strong> against your provider — from your device, not our servers.</div></div>
+        <div class="step"><div class="step-n">2</div><div class="step-text">Your <strong>full library</strong> is fetched from your provider and a TMDB lookup index is built locally in your browser.</div></div>
+        <div class="step"><div class="step-n">3</div><div class="step-text">The index is <strong>synced to our edge cache</strong> — only stream IDs, no credentials, no personal data.</div></div>
+        <div class="step"><div class="step-n">4</div><div class="step-text">You get an <strong>encrypted addon URL</strong>. Install it in Stremio. Your streams appear on any title page.</div></div>
+        <div class="step"><div class="step-n">5</div><div class="step-text">The index <strong>auto-refreshes every 12 hours</strong> — new content appears automatically. No action needed.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESULT -->
+  <div class="result-card" id="result-card">
+    <div class="result-header">Addon ready — install below</div>
+    <div class="stats-row" id="stats-row"></div>
+    <div class="url-block" id="url-block" style="display:none">
+      <div class="url-label">Addon URL</div>
+      <div class="url-val" id="url-val"></div>
+      <button class="copy-btn" id="copy-btn" onclick="copyUrl()">Copy</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-install" onclick="openStremio()">▶ &nbsp;Install in Stremio</button>
+      <button class="btn-copy" onclick="copyUrl()">Copy URL</button>
+    </div>
+  </div>
+</section>
+
+<!-- DONATIONS -->
+<section style="max-width:860px;margin:0 auto;padding:0 2.5rem 3rem">
+  <div style="border:1px solid rgba(134,0,161,0.4);background:rgba(134,0,161,0.06);border-radius:3px;padding:1.5rem 1.75rem;position:relative;overflow:hidden">
+    <div style="position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--purple),var(--purple2))"></div>
+    <div style="font-family:var(--mono);font-size:0.58rem;color:var(--purple3);text-transform:uppercase;letter-spacing:0.2em;margin-bottom:0.75rem">&#9749; &nbsp;Support the Crew</div>
+    <p style="font-size:0.92rem;color:var(--muted2);font-style:italic;font-weight:300;line-height:1.7;margin-bottom:1.25rem">
+      StremCodes is free, built in spare time, and costs real money to run. If it has saved you some headaches, a coffee goes a long way.
+    </p>
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
+      <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.6rem;background:#FFDD00;color:#000;text-decoration:none;font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:0.65rem 1.1rem;border-radius:2px;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+        <span>&#9749;</span> Buy Me a Coffee
+      </a>
+      <a href="https://cash.app/$Strong8Stream" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.6rem;background:#00D632;color:#000;text-decoration:none;font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:0.65rem 1.1rem;border-radius:2px;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+        <span>&#36;</span> Cash App
+      </a>
+    </div>
+  </div>
+</section>
+
+<div class="divider">
+  <div class="divider-line"></div>
+  <div class="divider-skull">⚓</div>
+  <div class="divider-line"></div>
+</div>
 
 <!-- TRUST -->
 <section class="trust-section">
@@ -1158,86 +1237,6 @@ footer {
       StremCodes talks exclusively to <strong>your own IPTV subscription</strong> — the same service you already pay for, accessed the same way your existing IPTV player does.
       If your provider is legitimate, your account is safe.
     </div>
-  </div>
-</section>
-
-<div class="divider">
-  <div class="divider-line"></div>
-  <div class="divider-skull">⚓</div>
-  <div class="divider-line"></div>
-</div>
-
-<!-- SETUP -->
-<section class="setup-section">
-  <div class="setup-label">Connect your provider</div>
-
-  <div class="setup-grid">
-    <div class="form-panel">
-      <div class="field">
-        <label>Server URL</label>
-        <input id="inp-server" type="url" placeholder="http://your-provider.com:8080"/>
-        <div class="field-hint">Full URL — no trailing slash</div>
-      </div>
-      <div class="field">
-        <label>Username</label>
-        <input id="inp-user" type="text" placeholder="username" autocomplete="off"/>
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input id="inp-pass" type="password" placeholder="password" autocomplete="off"/>
-      </div>
-      <button class="btn-setup" id="setup-btn" onclick="doSetup()">⚓ &nbsp;Set Sail</button>
-      <div class="status-box" id="status-box"></div>
-      <div class="prog-wrap" id="prog-wrap">
-        <div class="prog-meta"><span id="prog-text">Working...</span><span id="prog-pct">0%</span></div>
-        <div class="prog-bar"><div class="prog-fill" id="prog-fill"></div></div>
-      </div>
-    </div>
-
-    <div class="info-panel">
-      <div class="info-panel-title">What happens when you connect</div>
-      <div class="steps">
-        <div class="step"><div class="step-n">1</div><div class="step-text">Your credentials are <strong>validated directly</strong> against your provider — from your device, not our servers.</div></div>
-        <div class="step"><div class="step-n">2</div><div class="step-text">Your <strong>full library</strong> is fetched from your provider and a TMDB lookup index is built locally in your browser.</div></div>
-        <div class="step"><div class="step-n">3</div><div class="step-text">The index is <strong>synced to our edge cache</strong> — only stream IDs, no credentials, no personal data.</div></div>
-        <div class="step"><div class="step-n">4</div><div class="step-text">You get an <strong>encrypted addon URL</strong>. Install it in Stremio. Your streams appear on any title page.</div></div>
-        <div class="step"><div class="step-n">5</div><div class="step-text">The index <strong>auto-refreshes every 12 hours</strong> — new content appears automatically. No action needed.</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- RESULT -->
-  <div class="result-card" id="result-card">
-    <div class="result-header">Addon ready — install below</div>
-    <div class="stats-row" id="stats-row"></div>
-    <div class="url-block" id="url-block" style="display:none">
-      <div class="url-label">Addon URL</div>
-      <div class="url-val" id="url-val"></div>
-      <button class="copy-btn" id="copy-btn" onclick="copyUrl()">Copy</button>
-    </div>
-    <div class="btn-row">
-      <button class="btn-install" onclick="openStremio()">▶ &nbsp;Install in Stremio</button>
-      <button class="btn-copy" onclick="copyUrl()">Copy URL</button>
-    </div>
-  </div>
-</section>
-
-<!-- DONATIONS -->
-<section style="max-width:860px;margin:0 auto;padding:0 2.5rem 3rem">
-  <div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.2em;margin-bottom:1.25rem;display:flex;align-items:center;gap:0.75rem">
-    <span>Support the crew</span>
-    <span style="flex:1;height:1px;background:var(--border);display:block"></span>
-  </div>
-  <p style="font-size:0.95rem;color:var(--muted2);font-style:italic;font-weight:300;line-height:1.7;margin-bottom:1.5rem;max-width:520px">
-    StremCodes is free, built in spare time, and costs real money to run. If it's saved you some headaches, a coffee goes a long way.
-  </p>
-  <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
-    <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.6rem;background:#FFDD00;color:#000;text-decoration:none;font-family:var(--mono);font-size:0.72rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:0.75rem 1.25rem;border-radius:2px;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
-      <span style="font-size:1rem">&#9749;</span> Buy Me a Coffee
-    </a>
-    <a href="https://cash.app/$Strong8Stream" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.6rem;background:#00D632;color:#000;text-decoration:none;font-family:var(--mono);font-size:0.72rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;padding:0.75rem 1.25rem;border-radius:2px;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
-      <span style="font-size:1rem">&#36;</span> Cash App
-    </a>
   </div>
 </section>
 
