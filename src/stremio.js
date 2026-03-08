@@ -50,7 +50,7 @@ export function buildManifest(origin, token) {
     idPrefixes: ['xc_'],
     behaviorHints: {
       configurable: true,
-      configurationRequired: true,
+      configurationRequired: false,
       configurationURL: origin + '/configure',
     },
     stremioAddonsConfig: {
