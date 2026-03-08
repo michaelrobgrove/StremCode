@@ -546,20 +546,23 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--serif);
-  font-size: 21px;
-  line-height: 1.6;
+  font-size: 19px;
+  line-height: 1.7;
   overflow-x: hidden;
 }
 
-/* Noise texture overlay */
+/* Skull repeating background - change opacity on the ::before rule to adjust intensity */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  /* TO CHANGE COLOR: edit the %237eff5c value below (it's #7eff5c URL-encoded) */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Ctext x='50%25' y='54%25' font-size='32' text-anchor='middle' dominant-baseline='middle' fill='%237eff5c' opacity='0.07'%3E%E2%98%A0%3C/text%3E%3C/svg%3E");
+  background-size: 80px 80px;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.6;
+  /* TO CHANGE INTENSITY: edit the opacity value below (0.0 = invisible, 1.0 = full) */
+  opacity: 0.5;
 }
 
 /* Vignette */
@@ -618,6 +621,7 @@ nav {
   margin: 0 auto;
   padding: 5rem 2.5rem 3rem;
   position: relative;
+  text-align: left;
 }
 .hero-eyebrow {
   font-family: var(--mono);
@@ -639,7 +643,7 @@ nav {
 }
 h1 {
   font-family: var(--fraktur);
-  font-size: clamp(4rem, 10vw, 7.5rem);
+  font-size: clamp(3.5rem, 9vw, 6.5rem);
   line-height: 0.9;
   margin-bottom: 1.5rem;
   position: relative;
@@ -652,11 +656,11 @@ h1 .line2 {
   filter: drop-shadow(0 0 20px rgba(134,0,161,0.4));
 }
 .hero-sub {
-  font-size: 1.1rem;
+  font-size: 1.15rem;
   font-weight: 300;
   font-style: italic;
   color: var(--muted2);
-  max-width: 520px;
+  max-width: 600px;
   margin-bottom: 3rem;
   line-height: 1.7;
 }
@@ -667,6 +671,8 @@ h1 .line2 {
   max-width: 1100px;
   margin: 0 auto;
   padding: 0 2.5rem 4rem;
+  box-sizing: border-box;
+  width: 100%;
 }
 .trust-header {
   display: flex;
@@ -719,7 +725,7 @@ h1 .line2 {
   margin-bottom: 0.5rem;
 }
 .trust-body {
-  font-size: 0.88rem;
+  font-size: 1rem;
   color: var(--muted2);
   line-height: 1.6;
   font-weight: 300;
@@ -751,7 +757,7 @@ h1 .line2 {
   margin-bottom: 0.6rem;
 }
 .rd-warning-text {
-  font-size: 0.92rem;
+  font-size: 1rem;
   color: var(--muted2);
   line-height: 1.7;
   font-style: italic;
@@ -762,12 +768,14 @@ h1 .line2 {
 /* ── DIVIDER ── */
 .divider {
   max-width: 1100px;
-  margin: 0 auto 0;
+  margin: 0 auto;
   padding: 0 2.5rem;
   display: flex;
   align-items: center;
   gap: 1.5rem;
   margin-bottom: 4rem;
+  box-sizing: border-box;
+  width: 100%;
 }
 .divider-line { flex: 1; height: 1px; background: var(--border); }
 .divider-skull { color: var(--muted); font-size: 1.1rem; }
@@ -777,6 +785,8 @@ h1 .line2 {
   max-width: 1100px;
   margin: 0 auto;
   padding: 0 2.5rem 6rem;
+  box-sizing: border-box;
+  width: 100%;
 }
 .setup-label {
   font-family: var(--mono);
@@ -930,7 +940,7 @@ input:focus {
   background: var(--lime-dim);
 }
 .step-text {
-  font-size: 0.85rem;
+  font-size: 1rem;
   color: var(--muted2);
   line-height: 1.55;
   font-weight: 300;
