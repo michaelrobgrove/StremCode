@@ -19,7 +19,7 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
-const VERSION = '2.1.2a'; // display version (footer, health)
+const VERSION = '2.1.2c'; // display version (footer, health)
 const SEMVER  = '2.1.2';   // strict semver for Stremio manifests
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
@@ -44,6 +44,7 @@ export default {
       if (parts[0] === 'install') return handleInstall(request, url, env);
       if (parts[0] === 'index')     return handleIndexUpload(request, env);
       if (parts[0] === 'manifest.json') return json(buildDefaultManifest(url.origin));
+      if (parts[0] === 'token-hash')   return handleTokenHash(request, env);
       if (parts[0] === 'configure') return serveConfigure();
       if (parts[0] === 'refresh')   return handleRefresh(request, env);
       if (parts[0] === 'debug')   return handleDebug(parts[1], env);
@@ -130,21 +131,58 @@ async function handleRefresh(request, env) {
   return json({ ok: true, message: 'Index cleared — will rebuild on next stream request' });
 }
 
+// ---- POST /token-hash — returns hash from token, no credentials exposed -----
+async function handleTokenHash(request, env) {
+  if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
+  const { token } = await request.json().catch(() => ({}));
+  if (!token) return json({ error: 'Missing token' }, 400);
+  try {
+    const creds = await decryptCredentials(token, env.ENCRYPTION_SECRET);
+    const hash  = await credHash(creds.server, creds.username, creds.password);
+    return json({ hash });
+  } catch(e) {
+    return json({ error: 'Invalid token' }, 400);
+  }
+}
+
 // ---- GET /debug/:hash -------------------------------------------------------
 async function handleDebug(hash, env) {
   if (!hash) return json({ error: 'provide hash' }, 400);
   if (!env.INDEX_CACHE) return json({ error: 'no KV' }, 500);
   try {
     const raw = await env.INDEX_CACHE.get('idx:' + hash, { type: 'json' });
-    if (!raw) return json({ found: false, hash });
+    if (!raw) return json({ found: false, hash, message: 'No index found — user needs to complete setup or force rebuild' });
+
+    const vodTmdb    = Object.keys(raw.vod    || {}).length;
+    const serTmdb    = Object.keys(raw.series || {}).length;
+    const vodFuzzy   = Object.keys(raw.vodNames || {}).length;
+    const serFuzzy   = Object.keys(raw.serNames  || {}).length;
+    const ageMin     = Math.round((Date.now() - (raw.builtAt || 0)) / 60000);
+
+    // Determine health status
+    let status = 'healthy';
+    let notes = [];
+    if (vodTmdb === 0 && vodFuzzy === 0) { status = 'empty'; notes.push('Index is empty — setup may not have completed'); }
+    else if (vodTmdb === 0 && vodFuzzy > 0) { status = 'fuzzy-only'; notes.push('Provider has no TMDB IDs — using fuzzy title matching only'); }
+    else if (vodFuzzy === 0 && vodTmdb > 0) { status = 'tmdb-only'; notes.push('Index predates fuzzy support — force rebuild recommended'); }
+    if (ageMin > 720) notes.push('Index is ' + Math.round(ageMin/60) + 'h old — auto-refresh should have triggered');
+
     return json({
-      found: true,
+      status,
+      notes,
       hash,
-      builtAt: new Date(raw.builtAt).toISOString(),
-      vodEntries: Object.keys(raw.vod || {}).length,
-      seriesEntries: Object.keys(raw.series || {}).length,
-      vodSample: Object.entries(raw.vod || {}).slice(0, 3),
-      seriesSample: Object.entries(raw.series || {}).slice(0, 3),
+      builtAt: new Date(raw.builtAt || 0).toISOString(),
+      ageMinutes: ageMin,
+      index: {
+        movies:  { tmdbMatched: vodTmdb, fuzzyNames: vodFuzzy },
+        series:  { tmdbMatched: serTmdb, fuzzyNames: serFuzzy },
+      },
+      samples: {
+        vodTmdb:   Object.entries(raw.vod    || {}).slice(0, 3).map(([k,v]) => ({ tmdb: k, name: v.name, id: v.id })),
+        vodFuzzy:  Object.entries(raw.vodNames || {}).slice(0, 3).map(([k,v]) => ({ key: k, name: v.name })),
+        serTmdb:   Object.entries(raw.series  || {}).slice(0, 3).map(([k,v]) => ({ tmdb: k, name: v.name })),
+        serFuzzy:  Object.entries(raw.serNames  || {}).slice(0, 3).map(([k,v]) => ({ key: k, name: v.name })),
+      },
     });
   } catch(e) {
     return json({ error: e.message }, 500);
@@ -393,8 +431,12 @@ async function updateCreds() {
   try {
     var r = await xcFetch(PROXY, base + '&action=get_server_info', 12000);
     var d = await r.json();
-    if (!d || !d.user_info) throw new Error('Server did not respond correctly');
-    if (d.user_info.auth == 0) throw new Error('Wrong username or password');
+    if (!d) throw new Error('Empty response — check Server URL');
+    if (d.user_info && d.user_info.auth == 0) throw new Error('Wrong username or password');
+    if (!d.user_info) {
+      const msg = d.message || d.error || d.info || '';
+      throw new Error(msg ? 'Provider error: ' + msg : 'Server did not return account info — check your credentials and Server URL');
+    }
   } catch(e) {
     showStatus('update-status', 'fail', e.message);
     document.getElementById('update-btn').disabled = false;
@@ -1275,7 +1317,7 @@ footer {
 
 <footer>
   <div class="footer-brand">Low<span>Def</span>Pirate</div>
-  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2a</div>
+  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2c</div>
   <div class="footer-links">
     <a href="https://lowdefpirate.link" target="_blank">lowdefpirate.link</a>
     <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank">donate</a>
@@ -1309,12 +1351,26 @@ async function doSetup() {
   var acct;
   try {
     var r = await xcFetch(proxy, base + '&action=get_server_info', 12000);
-    var d = await r.json();
-    if (!d || !d.user_info) throw new Error('Server did not return account info — check your credentials');
-    if (d.user_info.auth == 0) throw new Error('Wrong username or password');
+    var d;
+    try { d = await r.json(); } catch(je) {
+      throw new Error('Server returned an invalid response — check your Server URL format (no trailing slash)');
+    }
+    if (!d) throw new Error('Empty response from server — is your Server URL correct?');
+    if (d.user_info && d.user_info.auth == 0) throw new Error('Wrong username or password');
+    if (!d.user_info) {
+      // Some providers return error messages in different fields
+      const msg = d.message || d.error || d.info || '';
+      if (msg) throw new Error('Provider error: ' + msg);
+      throw new Error('Server did not return account info — double-check your Server URL, username and password');
+    }
     acct = d.user_info;
   } catch(e) {
-    showStatus('fail', e.message || 'Could not reach server');
+    const friendly = e.message || 'Could not reach server';
+    // Add hint if it looks like a network/proxy issue vs credentials
+    const hint = (friendly.includes('fetch') || friendly.includes('network') || friendly.includes('timeout'))
+      ? friendly + ' (the proxy may not be able to reach your provider)'
+      : friendly;
+    showStatus('fail', hint);
     btn.disabled = false; btn.textContent = '⚓  Set Sail';
     setProgress(false); return;
   }
