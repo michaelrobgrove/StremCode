@@ -19,7 +19,8 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
-const VERSION = '2.1.1a';
+const VERSION = '2.1.1a'; // display version (footer, health)
+const SEMVER  = '2.1.1';   // strict semver for Stremio manifests
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
 
