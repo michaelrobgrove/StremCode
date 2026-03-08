@@ -145,7 +145,13 @@ async function refreshIndex(client, hash, proxyUrl, kv) {
 
   const payload = { builtAt: Date.now(), proxyUrl: proxy, vod, series: ser, vodNames, serNames };
   await kv.put('idx:' + hash, JSON.stringify(payload), { expirationTtl: INDEX_KV_TTL_S });
-  console.log('[index] refreshed — vod:', Object.keys(vod).length, 'series:', Object.keys(ser).length);
+  console.log('[index] refreshed —',
+    'vod TMDB:', Object.keys(vod).length, '/ vod fuzzy:', Object.keys(vodNames).length,
+    '| series TMDB:', Object.keys(ser).length, '/ series fuzzy:', Object.keys(serNames).length
+  );
+  if (Object.keys(vod).length === 0 && Object.keys(vodNames).length > 0) {
+    console.log('[index] ⚠ Provider has no TMDB IDs — fuzzy-only mode active');
+  }
 }
 
 async function xcFetch(proxyUrl, xcUrl, ms) {

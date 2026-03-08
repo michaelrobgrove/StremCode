@@ -53,12 +53,17 @@ export async function resolveImdb(imdbId, type, kv) {
     tmdbId = await tmdbFindByImdb(imdbId, type);
   }
 
-  if (!tmdbId) {
-    console.log('No TMDB id found for', imdbId);
-    return null;
-  }
+  // Even if no TMDB id, return name so fuzzy search can still work
+  const result = { tmdbId: tmdbId || null, name, year };
 
-  const result = { tmdbId, name, year };
+  if (!tmdbId) {
+    console.log('No TMDB id for', imdbId, '— will rely on fuzzy title match, name:', name);
+    // Still cache name-only result (shorter TTL since TMDB might get indexed later)
+    if (kv && name) {
+      kv.put('cm:' + imdbId, JSON.stringify(result), { expirationTtl: 7 * 24 * 3600 }).catch(() => {});
+    }
+    return result;
+  }
 
   // Cache in KV — permanent mapping
   if (kv) {

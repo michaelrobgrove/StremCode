@@ -164,26 +164,41 @@ async function buildStreamImdb(client, type, rawId, credHash, kv) {
   const tmdbId = resolved && resolved.tmdbId;
   const resolvedTitle = resolved && (resolved.name || resolved.title);
 
+  console.log('[stream] imdb=' + imdbId + ' tmdb=' + tmdbId + ' title="' + resolvedTitle + '" vodIdx=' + vodIndex.size + ' fuzzyVod=' + Object.keys(vodNames).length);
+
   if (type === 'movie') {
     // 1. Try TMDB match
     let entry = tmdbId ? vodIndex.get(tmdbId) : null;
-    // 2. Fuzzy fallback using resolved title
-    if (!entry && resolvedTitle) {
-      console.log('[vod] TMDB miss, trying fuzzy for:', resolvedTitle);
-      entry = fuzzyFind(resolvedTitle, vodNames);
-      if (entry) console.log('[vod] fuzzy matched:', entry.name);
+    if (entry) {
+      console.log('[vod] TMDB hit:', tmdbId, '->', entry.name);
+    } else {
+      // 2. Fuzzy fallback using resolved title from Cinemeta
+      if (resolvedTitle) {
+        console.log('[vod] TMDB miss (tmdb=' + tmdbId + ', vodIdx=' + vodIndex.size + '), fuzzy searching for: "' + resolvedTitle + '" in ' + Object.keys(vodNames).length + ' names');
+        entry = fuzzyFind(resolvedTitle, vodNames);
+        if (entry) console.log('[vod] fuzzy matched: "' + resolvedTitle + '" -> "' + entry.name + '"');
+        else console.log('[vod] fuzzy no match for: "' + resolvedTitle + '"');
+      } else {
+        console.log('[vod] no title from Cinemeta and no TMDB id — cannot match');
+      }
     }
-    if (!entry) { console.log('[vod] no match for', resolvedTitle || imdbId); return []; }
+    if (!entry) return [];
     return [{ url: client.vodUrl(entry.id, entry.ext), name: 'StremCodes', description: (entry.name || 'XC') + ' · ' + entry.ext.toUpperCase(), behaviorHints: { notWebReady: entry.ext !== 'mp4', bingeGroup: 'stremcodes' } }];
   }
 
   if (type === 'series' && season !== null) {
     let seriesEntry = tmdbId ? seriesIndex.get(tmdbId) : null;
-    // Fuzzy fallback for series
-    if (!seriesEntry && resolvedTitle) {
-      console.log('[series] TMDB miss, trying fuzzy for:', resolvedTitle);
-      const fuzzyResult = fuzzyFind(resolvedTitle, serNames);
-      if (fuzzyResult) { seriesEntry = fuzzyResult; console.log('[series] fuzzy matched:', fuzzyResult.name); }
+    if (seriesEntry) {
+      console.log('[series] TMDB hit:', tmdbId);
+    } else {
+      if (resolvedTitle) {
+        console.log('[series] TMDB miss (tmdb=' + tmdbId + ', serIdx=' + seriesIndex.size + '), fuzzy searching for: "' + resolvedTitle + '" in ' + Object.keys(serNames).length + ' names');
+        const fuzzyResult = fuzzyFind(resolvedTitle, serNames);
+        if (fuzzyResult) { seriesEntry = fuzzyResult; console.log('[series] fuzzy matched: "' + resolvedTitle + '" -> "' + fuzzyResult.name + '"'); }
+        else console.log('[series] fuzzy no match for: "' + resolvedTitle + '"');
+      } else {
+        console.log('[series] no title from Cinemeta and no TMDB id — cannot match');
+      }
     }
     const seriesId = seriesEntry && (seriesEntry.id || seriesEntry);
     console.log('[series] tmdbId=' + tmdbId + ' seriesId=' + seriesId + ' season=' + season + ' ep=' + episode);
