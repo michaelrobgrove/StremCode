@@ -38,6 +38,7 @@ export default {
       if (parts[0] === 'health')  return json({ status: 'ok', version: '2.1.1' });
       if (parts[0] === 'install') return handleInstall(request, url, env);
       if (parts[0] === 'index')   return handleIndexUpload(request, env);
+      if (parts[0] === 'debug')   return handleDebug(parts[1], env);
       if (parts.length >= 2)      return handleAddon(parts[0], parts.slice(1), url, env, ctx);
       return json({ error: 'Not found' }, 404);
     } catch (err) {
@@ -98,6 +99,27 @@ async function handleIndexUpload(request, env) {
   } catch (e) {
     console.error('[index] KV write failed:', e && e.message);
     return json({ error: 'KV write failed' }, 500);
+  }
+}
+
+// ---- GET /debug/:hash -------------------------------------------------------
+async function handleDebug(hash, env) {
+  if (!hash) return json({ error: 'provide hash' }, 400);
+  if (!env.INDEX_CACHE) return json({ error: 'no KV' }, 500);
+  try {
+    const raw = await env.INDEX_CACHE.get('idx:' + hash, { type: 'json' });
+    if (!raw) return json({ found: false, hash });
+    return json({
+      found: true,
+      hash,
+      builtAt: new Date(raw.builtAt).toISOString(),
+      vodEntries: Object.keys(raw.vod || {}).length,
+      seriesEntries: Object.keys(raw.series || {}).length,
+      vodSample: Object.entries(raw.vod || {}).slice(0, 3),
+      seriesSample: Object.entries(raw.series || {}).slice(0, 3),
+    });
+  } catch(e) {
+    return json({ error: e.message }, 500);
   }
 }
 
@@ -376,21 +398,46 @@ async function doSetup() {
   setProgress(true, 'Building TMDB index...', 75);
 
   // Step 3: Build TMDB index
-  var vodIndex = {}, seriesIndex = {};
+  // Priority order for duplicate TMDB ids (same show, multiple provider copies)
+  // EN = English source, preferred. Lower index = higher priority.
+  function streamPriority(name) {
+    var n = (name || '').toUpperCase();
+    if (n.startsWith('EN ') || n.startsWith('EN-') || n.indexOf(' - ') === -1) return 0;
+    if (n.startsWith('NF ') || n.startsWith('NF-')) return 1;
+    if (n.startsWith('AMZ') || n.startsWith('A+')) return 2;
+    if (n.startsWith('D+') || n.startsWith('D+ ')) return 3;
+    if (n.startsWith('MAX') || n.startsWith('HBO')) return 4;
+    if (n.startsWith('4K-')) return 8; // 4K copies last — may have fewer episodes listed
+    return 5;
+  }
+
+  var vodIndex = {}, vodPriority = {}, seriesIndex = {}, seriesPriority = {};
+  var vodSkipped = 0, seriesSkipped = 0;
+
   for (var i = 0; i < vods.length; i++) {
     var s = vods[i];
     var tid = s.tmdb ? String(s.tmdb).trim() : '';
-    if (tid && tid !== '0' && !vodIndex[tid]) {
-      vodIndex[tid] = { id: s.stream_id, ext: s.container_extension || 'mkv', name: s.name || '' };
-    }
+    if (tid && tid !== '0') {
+      var pri = streamPriority(s.name);
+      if (!(tid in vodIndex) || pri < vodPriority[tid]) {
+        vodIndex[tid] = { id: s.stream_id, ext: s.container_extension || 'mkv', name: s.name || '' };
+        vodPriority[tid] = pri;
+      }
+    } else { vodSkipped++; }
   }
   for (var i = 0; i < series.length; i++) {
     var s = series[i];
     var tid = s.tmdb ? String(s.tmdb).trim() : '';
-    if (tid && tid !== '0' && !seriesIndex[tid]) {
-      seriesIndex[tid] = String(s.series_id);
-    }
+    if (tid && tid !== '0') {
+      var pri = streamPriority(s.name);
+      if (!(tid in seriesIndex) || pri < seriesPriority[tid]) {
+        seriesIndex[tid] = String(s.series_id);
+        seriesPriority[tid] = pri;
+      }
+    } else { seriesSkipped++; }
   }
+  console.log('VOD: ' + Object.keys(vodIndex).length + ' indexed, ' + vodSkipped + ' skipped (no TMDB)');
+  console.log('Series: ' + Object.keys(seriesIndex).length + ' indexed, ' + seriesSkipped + ' skipped (no TMDB)');
 
   setProgress(true, 'Saving index...', 85);
 
@@ -432,12 +479,12 @@ async function doSetup() {
   setProgress(true, 'Done!', 100);
   var vc = Object.keys(vodIndex).length;
   var sc = Object.keys(seriesIndex).length;
-  showStatus('ok', 'Indexed ' + vc.toLocaleString() + ' movies and ' + sc.toLocaleString() + ' series');
-  showResult(acct, installData, vc, sc);
+  showStatus('ok', 'Indexed ' + vc.toLocaleString() + ' movies (' + vodSkipped + ' no TMDB) · ' + sc.toLocaleString() + ' series (' + seriesSkipped + ' no TMDB)');
+  showResult(acct, installData, vc, sc, vodSkipped, seriesSkipped);
   setTimeout(function() { setProgress(false); }, 800);
 }
 
-function showResult(acct, inst, vc, sc) {
+function showResult(acct, inst, vc, sc, vs, ss) {
   var card = document.getElementById('result-card');
   var grid = document.getElementById('info-grid');
   var exp = '—', ec = '';
@@ -451,8 +498,8 @@ function showResult(acct, inst, vc, sc) {
     infoItem('Username', esc(acct.username || '—'), '') +
     infoItem('Status', esc(acct.status || '—'), acct.status === 'Active' ? 'green' : 'red') +
     infoItem('Expires', exp, ec) +
-    infoItem('Movies', vc.toLocaleString(), 'green') +
-    infoItem('Series', sc.toLocaleString(), 'green') +
+    infoItem('Movies', vc.toLocaleString() + (vs ? ' (' + vs + ' no TMDB)' : ''), 'green') +
+    infoItem('Series', sc.toLocaleString() + (ss ? ' (' + ss + ' no TMDB)' : ''), sc > 0 ? 'green' : 'yellow') +
     infoItem('Connections', (acct.active_cons||0) + ' / ' + (acct.max_connections||'?'), '');
   document.getElementById('url-text').textContent = inst.addonUrl;
   document.getElementById('url-box').style.display = 'block';
