@@ -22,6 +22,10 @@ export function buildDefaultManifest(origin) {
       configurationRequired: true,
       configurationURL: origin + '/configure',
     },
+    stremioAddonsConfig: {
+      issuer: 'https://stremio-addons.net',
+      signature: 'eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..QQoYm2esFtBVRyKfJMy9yg.j3iqkkjc19DFAzOeSCBDzBfCZDf-OizkE8EMtPAvrUWHRY69gqw11n1J849r_KC4H-SU2kXXtdot9Z7Qe4WrVVKEnT-RFILyzn7w1xXf4PcO3aK-knse1q-U3CgxNkMu.HeZMqwUnF2IC5efdjp-fCw',
+    },
   };
 }
 
@@ -48,6 +52,10 @@ export function buildManifest(origin, token) {
       configurable: true,
       configurationRequired: true,
       configurationURL: origin + '/configure',
+    },
+    stremioAddonsConfig: {
+      issuer: 'https://stremio-addons.net',
+      signature: 'eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..QQoYm2esFtBVRyKfJMy9yg.j3iqkkjc19DFAzOeSCBDzBfCZDf-OizkE8EMtPAvrUWHRY69gqw11n1J849r_KC4H-SU2kXXtdot9Z7Qe4WrVVKEnT-RFILyzn7w1xXf4PcO3aK-knse1q-U3CgxNkMu.HeZMqwUnF2IC5efdjp-fCw',
     },
   };
 }
