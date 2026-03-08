@@ -19,6 +19,8 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
+const PROXY_URL = 'https://xcprox.managedservers.click';
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -93,7 +95,7 @@ async function handleIndexUpload(request, env) {
 
   try {
     await env.INDEX_CACHE.put('idx:' + hash, JSON.stringify(payload), {
-      expirationTtl: 25 * 60 * 60, // 25 hours
+      expirationTtl: 25 * 60 * 60,
     });
     console.log('[index] stored for hash', hash, '- vod entries:', Object.keys(vod).length, 'series:', Object.keys(series).length);
     return json({ ok: true, vodEntries: Object.keys(vod).length, seriesEntries: Object.keys(series).length });
@@ -133,16 +135,7 @@ async function handleAddon(token, path, url, env, ctx) {
   catch { return json({ error: 'Invalid token' }, 401); }
 
   const { server, username, password } = creds;
-  // Load proxyUrl from KV index so all XC calls route through user's VPS
-  let proxyUrl = null;
-  if (env.INDEX_CACHE) {
-    try {
-      const hash = await credHash(server, username, password);
-      const idx = await env.INDEX_CACHE.get('idx:' + hash, { type: 'json' });
-      if (idx && idx.proxyUrl) proxyUrl = idx.proxyUrl;
-    } catch {}
-  }
-  const client = new XtreamClient(server, username, password, proxyUrl);
+  const client = new XtreamClient(server, username, password, PROXY_URL);
   const route = path[0];
 
   if (route === 'manifest.json') {
@@ -311,7 +304,6 @@ const HTML = `<!DOCTYPE html>
       <div class="field"><label>Server URL</label><input id="inp-server" type="url" placeholder="http://your-provider.com:8080"/><div class="hint">Full URL — no trailing slash</div></div>
       <div class="field"><label>Username</label><input id="inp-user" type="text" placeholder="your_username" autocomplete="off"/></div>
       <div class="field"><label>Password</label><input id="inp-pass" type="password" placeholder="your_password" autocomplete="off"/></div>
-      <div class="field"><label>Proxy URL</label><input id="inp-proxy" type="url" placeholder="http://yourserver.com:6767"/><div class="hint">Your xc-proxy address — needed to bypass provider IP restrictions</div></div>
       <button class="btn btn-primary btn-full" id="setup-btn" onclick="doSetup()">Connect &amp; Build Index</button>
       <div id="status-box" style="display:none"></div>
       <div class="progress-wrap" id="prog-wrap">
@@ -354,12 +346,11 @@ async function doSetup() {
   var server = document.getElementById('inp-server').value.trim(); while(server.endsWith('/')) server = server.slice(0,-1);
   var username = document.getElementById('inp-user').value.trim();
   var password = document.getElementById('inp-pass').value;
-  var proxy = document.getElementById('inp-proxy').value.trim(); while(proxy.endsWith('/')) proxy = proxy.slice(0,-1);
+  var proxy = 'https://xcprox.managedservers.click';
   var btn = document.getElementById('setup-btn');
 
   if (!server || !username || !password) { showStatus('fail', 'Please fill in server, username and password.'); return; }
   if (!server.startsWith('http')) { showStatus('fail', 'Server URL must start with http:// or https://'); return; }
-  if (!proxy) { showStatus('fail', 'Please enter your proxy URL (e.g. http://yourserver.com:6767)'); return; }
 
   btn.disabled = true;
   btn.textContent = 'Working...';
@@ -575,7 +566,7 @@ function esc(s) {
   });
 }
 
-['inp-server','inp-user','inp-pass','inp-proxy'].forEach(function(id) {
+['inp-server','inp-user','inp-pass'].forEach(function(id) {
   document.getElementById(id).addEventListener('keydown', function(e) { if (e.key === 'Enter') doSetup(); });
 });
 </script>
