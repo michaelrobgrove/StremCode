@@ -19,7 +19,7 @@ import { encryptCredentials, decryptCredentials, credHash } from './crypto.js';
 import { XtreamClient } from './xtream.js';
 import { buildManifest, buildDefaultManifest, buildCatalog, buildMeta, buildStream } from './stremio.js';
 
-const VERSION = '2.1.2e'; // display version (footer, health)
+const VERSION = '2.1.2f'; // display version (footer, health)
 const SEMVER  = '2.1.2';   // strict semver for Stremio manifests
 
 const PROXY_URL = 'https://xcprox.managedservers.click';
@@ -1347,7 +1347,7 @@ footer {
 
 <footer>
   <div class="footer-brand">Low<span>Def</span>Pirate</div>
-  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2e</div>
+  <div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.15em;color:var(--muted);opacity:0.6">StremCodes v2.1.2f</div>
   <div class="footer-links">
     <a href="https://lowdefpirate.link" target="_blank">lowdefpirate.link</a>
     <a href="https://buymeacoffee.com/yourdsgnpro" target="_blank">donate</a>
@@ -1386,102 +1386,105 @@ var installData = null;
   }
 
 function clearTestResult() {
-    var r = document.getElementById('test-result');
-    if (r) { r.style.display = 'none'; r.innerHTML = ''; }
+  var r = document.getElementById('test-result');
+  if (r) { r.style.display = 'none'; r.innerHTML = ''; }
+}
+
+async function testServer() {
+  var raw = document.getElementById('inp-server').value.trim();
+  var result = document.getElementById('test-result');
+  var btn = document.getElementById('test-btn');
+  if (!raw) { showTestResult('Enter a server URL first', 'warn'); return; }
+
+  // Auto-fix common mistakes
+  var server = raw;
+  while (server.endsWith('/')) server = server.slice(0, -1);
+
+  // Detect port-as-path mistake: http://host/80 or http://host/8080
+  try {
+    var parsed = new URL(server);
+    var pathPart = parsed.pathname.replace(/^\//, '');
+    if (/^[0-9]{2,5}$/.test(pathPart)) {
+      var fixed = parsed.protocol + '//' + parsed.hostname + ':' + pathPart;
+      showTestResult('\u26a0 Looks like the port is in the wrong place. Did you mean: <strong>' + fixed + '</strong>?<br>Fix your URL and try again.', 'warn');
+      return;
+    }
+  } catch(e) { /* invalid URL, will be caught below */ }
+
+  if (!server.startsWith('http')) {
+    showTestResult('⚠ URL must start with http:// or https://', 'warn'); return;
   }
 
-  async function testServer() {
-    var raw = document.getElementById('inp-server').value.trim();
-    var result = document.getElementById('test-result');
-    var btn = document.getElementById('test-btn');
-    if (!raw) { showTestResult('Enter a server URL first', 'warn'); return; }
+  btn.disabled = true; btn.textContent = '...';
+  showTestResult('Probing server...', 'loading');
 
-    // Auto-fix common mistakes
-    var server = raw;
-    while (server.endsWith('/')) server = server.slice(0, -1);
+  var proxy = 'https://xcprox.managedservers.click';
+  var creds = '?username=test&password=test';
+  var candidates = [
+    { url: server + '/player_api.php' + creds + '&action=get_server_info', label: '/player_api.php' },
+    { url: server + '/get.php' + creds + '&action=get_server_info', label: '/get.php' },
+    { url: server + '/get' + creds + '&action=get_server_info', label: '/get' },
+  ];
 
-    // Detect port-as-path mistake: http://host/80 or http://host/8080
-    var portAsPath = server.match(/^(https?:\/\/[^/]+)\/([0-9]{2,5})$/);
-    if (portAsPath) {
-      var fixed = portAsPath[1] + ':' + portAsPath[2];
-      showTestResult('⚠ Looks like port is in the wrong place. Did you mean: <strong>' + fixed + '</strong>?<br>Fix your URL and try again.', 'warn');
-      return;
-    }
+  var reachable = false;
+  var reachablePath = null;
+  var serverInfo = null;
 
-    if (!server.startsWith('http')) {
-      showTestResult('⚠ URL must start with http:// or https://', 'warn'); return;
-    }
+  for (var i = 0; i < candidates.length; i++) {
+    try {
+      var r = await xcFetch(proxy, candidates[i].url, 8000);
+      var d;
+      try { d = await r.json(); } catch(e) { continue; }
+      if (d && (d.server_info || d.user_info)) {
+        reachable = true;
+        reachablePath = candidates[i].label;
+        serverInfo = d.server_info || null;
+        break;
+      }
+    } catch(e) { /* try next */ }
+  }
 
-    btn.disabled = true; btn.textContent = '...';
-    showTestResult('Probing server...', 'loading');
+  btn.disabled = false; btn.textContent = 'Test';
 
-    var proxy = 'https://xcprox.managedservers.click';
-    var creds = '?username=test&password=test';
-    var candidates = [
-      { url: server + '/player_api.php' + creds + '&action=get_server_info', label: '/player_api.php' },
-      { url: server + '/get.php' + creds + '&action=get_server_info', label: '/get.php' },
-      { url: server + '/get' + creds + '&action=get_server_info', label: '/get' },
-    ];
-
-    var reachable = false;
-    var reachablePath = null;
-    var serverInfo = null;
-
-    for (var i = 0; i < candidates.length; i++) {
-      try {
-        var r = await xcFetch(proxy, candidates[i].url, 8000);
-        var d;
-        try { d = await r.json(); } catch(e) { continue; }
-        if (d && (d.server_info || d.user_info)) {
-          reachable = true;
-          reachablePath = candidates[i].label;
-          serverInfo = d.server_info || null;
-          break;
-        }
-      } catch(e) { /* try next */ }
-    }
-
-    btn.disabled = false; btn.textContent = 'Test';
-
-    if (!reachable) {
-      showTestResult(
-        '✗ Could not reach server at <strong>' + server + '</strong><br>' +
-        'Tried: /player_api.php, /get.php, /get — none responded.<br>' +
-        '<span style="color:var(--muted)">Check: correct URL? Port included? http not https?</span>',
-        'fail'
-      );
-      return;
-    }
-
-    var info = '';
-    if (serverInfo) {
-      var proto = serverInfo.server_protocol || 'http';
-      var port  = serverInfo.port || '80';
-      var httpsPort = serverInfo.https_port || '';
-      info += '<br><span style="color:var(--muted)">Protocol: ' + proto + ' · Port: ' + port;
-      if (httpsPort) info += ' · HTTPS port: ' + httpsPort;
-      info += '</span>';
-    }
-
+  if (!reachable) {
     showTestResult(
-      '✓ Server is reachable via <strong>' + reachablePath + '</strong>' + info + '<br>' +
-      '<span style="color:var(--muted)">Enter your username and password and hit Set Sail.</span>',
-      'ok'
+      '✗ Could not reach server at <strong>' + server + '</strong><br>' +
+      'Tried: /player_api.php, /get.php, /get — none responded.<br>' +
+      '<span style="color:var(--muted)">Check: correct URL? Port included? http not https?</span>',
+      'fail'
     );
-
-    // Update the server field with cleaned URL if it changed
-    if (server !== raw) document.getElementById('inp-server').value = server;
+    return;
   }
 
-  function showTestResult(msg, type) {
-    var el = document.getElementById('test-result');
-    var colors = { ok: 'var(--lime)', fail: '#f87171', warn: '#fbbf24', loading: 'var(--muted2)' };
-    el.style.display = 'block';
-    el.style.color = colors[type] || 'var(--muted2)';
-    el.innerHTML = msg;
+  var info = '';
+  if (serverInfo) {
+    var proto = serverInfo.server_protocol || 'http';
+    var port  = serverInfo.port || '80';
+    var httpsPort = serverInfo.https_port || '';
+    info += '<br><span style="color:var(--muted)">Protocol: ' + proto + ' · Port: ' + port;
+    if (httpsPort) info += ' · HTTPS port: ' + httpsPort;
+    info += '</span>';
   }
 
-  async function doSetup() {
+  showTestResult(
+    '✓ Server is reachable via <strong>' + reachablePath + '</strong>' + info + '<br>' +
+    '<span style="color:var(--muted)">Enter your username and password and hit Set Sail.</span>',
+    'ok'
+  );
+
+  // Update the server field with cleaned URL if it changed
+  if (server !== raw) document.getElementById('inp-server').value = server;
+  }
+
+function showTestResult(msg, type) {
+  var el = document.getElementById('test-result');
+  var colors = { ok: 'var(--lime)', fail: '#f87171', warn: '#fbbf24', loading: 'var(--muted2)' };
+  el.style.display = 'block';
+  el.style.color = colors[type] || 'var(--muted2)';
+  el.innerHTML = msg;
+}
+
+async function doSetup() {
   var server = document.getElementById('inp-server').value.trim();
   while (server.endsWith('/')) server = server.slice(0, -1);
   var username = document.getElementById('inp-user').value.trim();
