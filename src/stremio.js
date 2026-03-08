@@ -26,7 +26,11 @@ export function buildManifest(origin, token) {
       { name: 'stream',  types: ['movie', 'series'], idPrefixes: ['tt', 'kitsu', 'xc_'] },
     ],
     idPrefixes: ['xc_'],
-    behaviorHints: { configurable: false, configurationRequired: false },
+    behaviorHints: {
+      configurable: true,
+      configurationRequired: true,
+      configurationURL: origin + '/configure',
+    },
   };
 }
 
